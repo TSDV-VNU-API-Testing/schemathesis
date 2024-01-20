@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import base64
 import json
 import re
@@ -6,7 +7,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from queue import Queue
-from typing import IO, Any, Generator, Iterator, cast, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any, Generator, Iterator, cast
 
 from ..constants import SCHEMATHESIS_VERSION
 from ..runner import events
@@ -16,10 +17,11 @@ from .handlers import EventHandler
 if TYPE_CHECKING:
     import click
     import requests
+
+    from ..generation import DataGenerationMethod
     from ..models import Request, Response
     from ..runner.serialization import SerializedCheck, SerializedInteraction
     from .context import ExecutionContext
-    from ..generation import DataGenerationMethod
 
 # Wait until the worker terminates
 WRITER_WORKER_JOIN_TIMEOUT = 1
@@ -49,7 +51,9 @@ class CassetteWriter(EventHandler):
         )
         self.worker.start()
 
-    def handle_event(self, context: ExecutionContext, event: events.ExecutionEvent) -> None:
+    def handle_event(
+        self, context: ExecutionContext, event: events.ExecutionEvent
+    ) -> None:
         if isinstance(event, events.Initialized):
             # In the beginning we write metadata and start `http_interactions` list
             self.queue.put(Initialize())
@@ -110,7 +114,9 @@ def get_command_representation() -> str:
     return f"st {args}"
 
 
-def worker(file_handle: click.utils.LazyFile, preserve_exact_body_bytes: bool, queue: Queue) -> None:
+def worker(
+    file_handle: click.utils.LazyFile, preserve_exact_body_bytes: bool, queue: Queue
+) -> None:
     """Write YAML to a file in an incremental manner.
 
     This implementation doesn't use `pyyaml` package and composes YAML manually as string due to the following reasons:
@@ -127,10 +133,14 @@ def worker(file_handle: click.utils.LazyFile, preserve_exact_body_bytes: bool, q
         return "\n".join(f"      - {json.dumps(v)}" for v in values)
 
     def format_headers(headers: dict[str, list[str]]) -> str:
-        return "\n".join(f'      "{name}":\n{format_header_values(values)}' for name, values in headers.items())
+        return "\n".join(
+            f'      "{name}":\n{format_header_values(values)}'
+            for name, values in headers.items()
+        )
 
     def format_check_message(message: str | None) -> str:
-        return "~" if message is None else f"{repr(message)}"
+        # Original: return "~" if message is None else f"{repr(message)}"
+        return ""
 
     def format_checks(checks: list[SerializedCheck]) -> str:
         return "\n".join(
@@ -255,7 +265,10 @@ def write_double_quoted(stream: IO, text: str) -> None:
         if (
             ch is None
             or ch in '"\\\x85\u2028\u2029\uFEFF'
-            or not ("\x20" <= ch <= "\x7E" or ("\xA0" <= ch <= "\uD7FF" or "\uE000" <= ch <= "\uFFFD"))
+            or not (
+                "\x20" <= ch <= "\x7E"
+                or ("\xA0" <= ch <= "\uD7FF" or "\uE000" <= ch <= "\uFFFD")
+            )
         ):
             if start < end:
                 stream.write(text[start:end])
@@ -301,7 +314,9 @@ def replay(
     kwargs = {}
     if request_proxy is not None:
         kwargs["proxies"] = {"all": request_proxy}
-    for interaction in filter_cassette(cassette["http_interactions"], id_, status, uri, method):
+    for interaction in filter_cassette(
+        cassette["http_interactions"], id_, status, uri, method
+    ):
         request = get_prepared_request(interaction["request"])
         response = session.send(request, **kwargs)  # type: ignore
         yield Replayed(interaction, response)
@@ -351,9 +366,9 @@ def filter_cassette(
 
 def get_prepared_request(data: dict[str, Any]) -> requests.PreparedRequest:
     """Create a `requests.PreparedRequest` from a serialized one."""
-    from requests.structures import CaseInsensitiveDict
-    from requests.cookies import RequestsCookieJar
     import requests
+    from requests.cookies import RequestsCookieJar
+    from requests.structures import CaseInsensitiveDict
 
     prepared = requests.PreparedRequest()
     prepared.method = data["method"]

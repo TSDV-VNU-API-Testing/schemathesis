@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import base64
 import enum
 import io
@@ -10,58 +11,78 @@ from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 from queue import Queue
-from typing import Any, Callable, Generator, Iterable, NoReturn, cast, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable, NoReturn, cast
 from urllib.parse import urlparse
 
 import click
+from hypothesis.strategies._internal.regex import set_regex_char, set_regex_text
+from hypothesis_jsonschema._from_schema import set_char, set_text
 
 from .. import checks as checks_module
-from .. import contrib, experimental, generation
+from .. import contrib, experimental
 from .. import fixups as _fixups
-from .. import runner, service
+from .. import generation, runner, service
 from .. import targets as targets_module
 from ..code_samples import CodeSampleStyle
-from .constants import HealthCheck, Phase, Verbosity
-from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod
 from ..constants import (
     API_NAME_ENV_VAR,
     BASE_URL_ENV_VAR,
     DEFAULT_RESPONSE_TIMEOUT,
     DEFAULT_STATEFUL_RECURSION_LIMIT,
+    EXTENSIONS_DOCUMENTATION_URL,
     HOOKS_MODULE_ENV_VAR,
     HYPOTHESIS_IN_MEMORY_DATABASE_IDENTIFIER,
-    WAIT_FOR_SCHEMA_ENV_VAR,
-    EXTENSIONS_DOCUMENTATION_URL,
     ISSUE_TRACKER_URL,
+    WAIT_FOR_SCHEMA_ENV_VAR,
 )
-from ..exceptions import SchemaError, extract_nth_traceback, SchemaErrorType
+from ..exceptions import SchemaError, SchemaErrorType, extract_nth_traceback
 from ..fixups import ALL_FIXUPS
-from ..loaders import load_app, load_yaml
-from ..runner.override import CaseOverride
-from ..transports.auth import get_requests_auth
+from ..generation import (
+    AVAILABLE_LANGUAGES,
+    AVAILABLE_LANGUAGES_ST,
+    DEFAULT_DATA_GENERATION_METHODS,
+    DataGenerationMethod,
+)
 from ..hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, HookScope
+from ..internal.datetime import current_datetime
+from ..internal.validation import file_exists
+from ..loaders import load_app, load_yaml
 from ..models import Case, CheckFunction
 from ..runner import events, prepare_hypothesis_settings
+from ..runner.override import CaseOverride
 from ..specs.graphql import loaders as gql_loaders
 from ..specs.openapi import loaders as oas_loaders
 from ..stateful import Stateful
 from ..targets import Target
+from ..transports.auth import get_requests_auth
 from ..types import Filter, PathLike, RequestCert
-from ..internal.datetime import current_datetime
-from ..internal.validation import file_exists
 from . import callbacks, cassettes, output
-from .constants import DEFAULT_WORKERS, MAX_WORKERS, MIN_WORKERS
+from .constants import (
+    DEFAULT_WORKERS,
+    MAX_WORKERS,
+    MIN_WORKERS,
+    HealthCheck,
+    Phase,
+    Verbosity,
+)
 from .context import ExecutionContext, FileReportContext, ServiceReportContext
 from .debug import DebugOutputHandler
 from .junitxml import JunitXMLHandler
-from .options import CsvChoice, CsvEnumChoice, CustomHelpMessageChoice, NotSet, OptionalInt
+from .options import (
+    CsvChoice,
+    CsvEnumChoice,
+    CustomHelpMessageChoice,
+    NotSet,
+    OptionalInt,
+)
 from .sanitization import SanitizationHandler
 
 if TYPE_CHECKING:
     import hypothesis
     import requests
-    from ..service.client import ServiceClient
+
     from ..schemas import BaseSchema
+    from ..service.client import ServiceClient
     from ..specs.graphql.schemas import GraphQLSchema
     from .handlers import EventHandler
 
@@ -81,7 +102,9 @@ DEFAULT_TARGETS_NAMES = _get_callable_names(targets_module.DEFAULT_TARGETS)
 ALL_TARGETS_NAMES = _get_callable_names(targets_module.ALL_TARGETS)
 TARGETS_TYPE = click.Choice((*ALL_TARGETS_NAMES, "all"))
 
-DATA_GENERATION_METHOD_TYPE = click.Choice([item.name for item in DataGenerationMethod] + ["all"])
+DATA_GENERATION_METHOD_TYPE = click.Choice(
+    [item.name for item in DataGenerationMethod] + ["all"]
+)
 
 DEPRECATED_CASSETTE_PATH_OPTION_WARNING = (
     "Warning: Option `--store-network-log` is deprecated and will be removed in Schemathesis 4.0. "
@@ -95,26 +118,39 @@ DEPRECATED_SHOW_ERROR_TRACEBACKS_OPTION_WARNING = (
     "Warning: Option `--show-errors-tracebacks` is deprecated and will be removed in Schemathesis 4.0. "
     "Use `--show-trace` instead"
 )
-CASSETTES_PATH_INVALID_USAGE_MESSAGE = "Can't use `--store-network-log` and `--cassette-path` simultaneously"
-COLOR_OPTIONS_INVALID_USAGE_MESSAGE = "Can't use `--no-color` and `--force-color` simultaneously"
+CASSETTES_PATH_INVALID_USAGE_MESSAGE = (
+    "Can't use `--store-network-log` and `--cassette-path` simultaneously"
+)
+COLOR_OPTIONS_INVALID_USAGE_MESSAGE = (
+    "Can't use `--no-color` and `--force-color` simultaneously"
+)
 
 
 def reset_checks() -> None:
     """Get checks list to their default state."""
     # Useful in tests
-    checks_module.ALL_CHECKS = checks_module.DEFAULT_CHECKS + checks_module.OPTIONAL_CHECKS
+    checks_module.ALL_CHECKS = (
+        checks_module.DEFAULT_CHECKS + checks_module.OPTIONAL_CHECKS
+    )
     CHECKS_TYPE.choices = _get_callable_names(checks_module.ALL_CHECKS) + ("all",)
 
 
 def reset_targets() -> None:
     """Get targets list to their default state."""
     # Useful in tests
-    targets_module.ALL_TARGETS = targets_module.DEFAULT_TARGETS + targets_module.OPTIONAL_TARGETS
+    targets_module.ALL_TARGETS = (
+        targets_module.DEFAULT_TARGETS + targets_module.OPTIONAL_TARGETS
+    )
     TARGETS_TYPE.choices = _get_callable_names(targets_module.ALL_TARGETS) + ("all",)
 
 
 @click.group(context_settings=CONTEXT_SETTINGS)
-@click.option("--pre-run", help="A module to execute before running the tests.", type=str, hidden=True)
+@click.option(
+    "--pre-run",
+    help="A module to execute before running the tests.",
+    type=str,
+    hidden=True,
+)
 @click.version_option()
 def schemathesis(pre_run: str | None = None) -> None:
     """Automated API testing employing fuzzing techniques for OpenAPI and GraphQL."""
@@ -131,13 +167,21 @@ def schemathesis(pre_run: str | None = None) -> None:
 
 class ParameterGroup(enum.Enum):
     filtering = "Testing scope", "Customize the scope of the API testing."
-    validation = "Response & Schema validation", "These options specify how API responses and schemas are validated."
-    hypothesis = "Hypothesis engine", "Configuration of the underlying Hypothesis engine."
+    validation = (
+        "Response & Schema validation",
+        "These options specify how API responses and schemas are validated.",
+    )
+    hypothesis = (
+        "Hypothesis engine",
+        "Configuration of the underlying Hypothesis engine.",
+    )
     generic = "Generic", None
 
 
 class CommandWithCustomHelp(click.Command):
-    def format_options(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+    def format_options(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
         # Group options first
         groups = defaultdict(list)
         for param in self.get_params(ctx):
@@ -213,7 +257,10 @@ class ReportToService:
 REPORT_TO_SERVICE = ReportToService()
 
 
-@schemathesis.command(short_help="Execute automated tests based on API specifications.", cls=CommandWithCustomHelp)
+@schemathesis.command(
+    short_help="Execute automated tests based on API specifications.",
+    cls=CommandWithCustomHelp,
+)
 @click.argument("schema", type=str)
 @click.argument("api_name", type=str, required=False, envvar=API_NAME_ENV_VAR)
 @click.option(
@@ -662,8 +709,15 @@ The report data, consisting of a tar gz file with multiple JSON files, is subjec
     cls=GroupedOption,
     group=ParameterGroup.hypothesis,
 )
-@click.option("--no-color", help="Disable ANSI color escape codes.", type=bool, is_flag=True)
-@click.option("--force-color", help="Explicitly tells to enable ANSI color escape codes.", type=bool, is_flag=True)
+@click.option(
+    "--no-color", help="Disable ANSI color escape codes.", type=bool, is_flag=True
+)
+@click.option(
+    "--force-color",
+    help="Explicitly tells to enable ANSI color escape codes.",
+    type=bool,
+    is_flag=True,
+)
 @click.option(
     "--experimental",
     help="Enable experimental support for specific features.",
@@ -710,6 +764,14 @@ The report data, consisting of a tar gz file with multiple JSON files, is subjec
 )
 @with_hosts_file
 @click.option("--verbosity", "-v", help="Increase verbosity of the output.", count=True)
+@click.option(
+    "--language",
+    "-l",
+    help="Defines how Schemathesis generates what kind of languages.",
+    type=click.Choice(choices=AVAILABLE_LANGUAGES, case_sensitive=False),
+    default=AVAILABLE_LANGUAGES[0],
+    show_default=True,
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -725,7 +787,9 @@ def run(
     experimental: list,
     checks: Iterable[str] = DEFAULT_CHECKS_NAMES,
     exclude_checks: Iterable[str] = (),
-    data_generation_methods: tuple[DataGenerationMethod, ...] = DEFAULT_DATA_GENERATION_METHODS,
+    data_generation_methods: tuple[
+        DataGenerationMethod, ...
+    ] = DEFAULT_DATA_GENERATION_METHODS,
     max_response_time: int | None = None,
     targets: Iterable[str] = DEFAULT_TARGETS_NAMES,
     exit_first: bool = False,
@@ -782,6 +846,7 @@ def run(
     schemathesis_io_telemetry: bool = True,
     hosts_file: PathLike = service.DEFAULT_HOSTS_PATH,
     force_color: bool = False,
+    language=AVAILABLE_LANGUAGES[0],
 ) -> None:
     """Run tests against an API using a specified SCHEMA.
 
@@ -795,7 +860,8 @@ def run(
     _hypothesis_suppress_health_check: list[hypothesis.HealthCheck] | None = None
     if hypothesis_suppress_health_check is not None:
         _hypothesis_suppress_health_check = [
-            health_check.as_hypothesis() for health_check in hypothesis_suppress_health_check
+            health_check.as_hypothesis()
+            for health_check in hypothesis_suppress_health_check
         ]
 
     if show_errors_tracebacks:
@@ -806,9 +872,16 @@ def run(
     for experiment in experimental:
         experiment.enable()
 
-    override = CaseOverride(query=set_query, headers=set_header, cookies=set_cookie, path_parameters=set_path)
+    override = CaseOverride(
+        query=set_query,
+        headers=set_header,
+        cookies=set_cookie,
+        path_parameters=set_path,
+    )
 
-    generation_config = generation.GenerationConfig(allow_x00=generation_allow_x00, codec=generation_codec)
+    generation_config = generation.GenerationConfig(
+        allow_x00=generation_allow_x00, codec=generation_codec
+    )
 
     report: ReportToService | click.utils.LazyFile | None
     if report_value is None:
@@ -824,7 +897,9 @@ def run(
     decide_color_output(ctx, no_color, force_color)
 
     check_auth(auth, headers, override)
-    selected_targets = tuple(target for target in targets_module.ALL_TARGETS if target.__name__ in targets)
+    selected_targets = tuple(
+        target for target in targets_module.ALL_TARGETS if target.__name__ in targets
+    )
 
     if store_network_log and cassette_path:
         raise click.UsageError(CASSETTES_PATH_INVALID_USAGE_MESSAGE)
@@ -833,9 +908,18 @@ def run(
         cassette_path = store_network_log
 
     schemathesis_io_hostname = urlparse(schemathesis_io_url).netloc
-    token = schemathesis_io_token or service.hosts.get_token(hostname=schemathesis_io_hostname, hosts_file=hosts_file)
+    token = schemathesis_io_token or service.hosts.get_token(
+        hostname=schemathesis_io_hostname, hosts_file=hosts_file
+    )
     schema_kind = callbacks.parse_schema_kind(schema, app)
-    callbacks.validate_schema(schema, schema_kind, base_url=base_url, dry_run=dry_run, app=app, api_name=api_name)
+    callbacks.validate_schema(
+        schema,
+        schema_kind,
+        base_url=base_url,
+        dry_run=dry_run,
+        app=app,
+        api_name=api_name,
+    )
     client = None
     schema_or_location: str | dict[str, Any] = schema
     if schema_kind == callbacks.SchemaInputKind.NAME:
@@ -856,7 +940,9 @@ def run(
                     if schemathesis_io_hostname == service.DEFAULT_HOSTNAME
                     else schemathesis_io_hostname
                 )
-                click.secho(f"Missing authentication for {hostname} upload", bold=True, fg="red")
+                click.secho(
+                    f"Missing authentication for {hostname} upload", bold=True, fg="red"
+                )
                 click.echo(
                     f"\nYou've specified an API name, suggesting you want to upload data to {bold(hostname)}. "
                     "However, your CLI is not currently authenticated."
@@ -871,7 +957,9 @@ def run(
                 # Replace config values with ones loaded from the service
                 schema_or_location = details.specification.schema
                 default_environment = details.default_environment
-                base_url = base_url or (default_environment.url if default_environment else None)
+                base_url = base_url or (
+                    default_environment.url if default_environment else None
+                )
             except requests.HTTPError as exc:
                 handle_service_error(exc, name)
     if report is REPORT_TO_SERVICE and not client:
@@ -884,9 +972,13 @@ def run(
     if "all" in checks:
         selected_checks = checks_module.ALL_CHECKS
     else:
-        selected_checks = tuple(check for check in checks_module.ALL_CHECKS if check.__name__ in checks)
+        selected_checks = tuple(
+            check for check in checks_module.ALL_CHECKS if check.__name__ in checks
+        )
 
-    selected_checks = tuple(check for check in selected_checks if check.__name__ not in exclude_checks)
+    selected_checks = tuple(
+        check for check in selected_checks if check.__name__ not in exclude_checks
+    )
 
     if fixups:
         if "all" in fixups:
@@ -900,6 +992,8 @@ def run(
         contrib.openapi.formats.uuid.install()
     if contrib_openapi_fill_missing_examples:
         contrib.openapi.fill_missing_examples.install()
+
+    prepare_language(lang=language)
 
     hypothesis_settings = prepare_hypothesis_settings(
         database=hypothesis_database,
@@ -973,6 +1067,16 @@ def run(
         base_url=base_url,
         started_at=started_at,
     )
+
+
+def prepare_language(lang: str):
+    """This is just temporary solution to modify the language hypothesis_jsonschema and hypothesis regex generates"""
+    # hypothesis_jsonschema
+    set_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
+    set_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
+    # hypothesis
+    set_regex_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
+    set_regex_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
 
 
 def prepare_request_cert(cert: str | None, key: str | None) -> RequestCert | None:
@@ -1171,7 +1275,9 @@ def _load_openapi_schema(config: LoaderConfig) -> BaseSchema:
     return loader(config.schema_or_location, **kwargs)
 
 
-def detect_loader(schema_or_location: str | dict[str, Any], app: Any, is_openapi: bool) -> Callable:
+def detect_loader(
+    schema_or_location: str | dict[str, Any], app: Any, is_openapi: bool
+) -> Callable:
     """Detect API schema loader."""
     if isinstance(schema_or_location, str):
         if file_exists(schema_or_location):
@@ -1180,7 +1286,11 @@ def detect_loader(schema_or_location: str | dict[str, Any], app: Any, is_openapi
             return oas_loaders.from_path if is_openapi else gql_loaders.from_path  # type: ignore
         if app is not None and not urlparse(schema_or_location).netloc:
             # App is passed & location is relative
-            return oas_loaders.get_loader_for_app(app) if is_openapi else gql_loaders.get_loader_for_app(app)
+            return (
+                oas_loaders.get_loader_for_app(app)
+                if is_openapi
+                else gql_loaders.get_loader_for_app(app)
+            )
         # Default behavior
         return oas_loaders.from_uri if is_openapi else gql_loaders.from_url  # type: ignore
     return oas_loaders.from_dict if is_openapi else gql_loaders.from_dict  # type: ignore
@@ -1241,17 +1351,30 @@ def _add_requests_kwargs(kwargs: dict[str, Any], config: LoaderConfig) -> None:
 def is_probably_graphql(schema_or_location: str | dict[str, Any]) -> bool:
     """Detect whether it is likely that the given location is a GraphQL endpoint."""
     if isinstance(schema_or_location, str):
-        return schema_or_location.endswith(("/graphql", "/graphql/", ".graphql", ".gql"))
+        return schema_or_location.endswith(
+            ("/graphql", "/graphql/", ".graphql", ".gql")
+        )
     return "__schema" in schema_or_location or (
         "data" in schema_or_location and "__schema" in schema_or_location["data"]
     )
 
 
-def check_auth(auth: tuple[str, str] | None, headers: dict[str, str], override: CaseOverride) -> None:
+def check_auth(
+    auth: tuple[str, str] | None, headers: dict[str, str], override: CaseOverride
+) -> None:
     auth_is_set = auth is not None
     header_is_set = "authorization" in {header.lower() for header in headers}
     override_is_set = "authorization" in {header.lower() for header in override.headers}
-    if len([is_set for is_set in (auth_is_set, header_is_set, override_is_set) if is_set]) > 1:
+    if (
+        len(
+            [
+                is_set
+                for is_set in (auth_is_set, header_is_set, override_is_set)
+                if is_set
+            ]
+        )
+        > 1
+    ):
         message = "The "
         used = []
         if auth_is_set:
@@ -1285,14 +1408,20 @@ def load_hook(module_name: str) -> None:
             click.echo(
                 f"\nAn attempt to import the module {formatted_module_name} failed because it could not be found."
             )
-            click.echo("\nEnsure the module name is correctly spelled and reachable from the current directory.")
+            click.echo(
+                "\nEnsure the module name is correctly spelled and reachable from the current directory."
+            )
         else:
-            click.echo(f"\nAn error occurred while importing the module {formatted_module_name}. Traceback:")
+            click.echo(
+                f"\nAn error occurred while importing the module {formatted_module_name}. Traceback:"
+            )
             trace = extract_nth_traceback(exc.__traceback__, 1)
             lines = traceback.format_exception(type(exc), exc, trace)
             message = "".join(lines).strip()
             click.secho(f"\n{message}", fg="red")
-        click.echo(f"\nFor more information on how to work with hooks, visit {EXTENSIONS_DOCUMENTATION_URL}")
+        click.echo(
+            f"\nFor more information on how to work with hooks, visit {EXTENSIONS_DOCUMENTATION_URL}"
+        )
         raise click.exceptions.Exit(1) from None
 
 
@@ -1336,7 +1465,9 @@ def execute(
     if client:
         # If API name is specified, validate it
         report_queue = Queue()
-        report_context = ServiceReportContext(queue=report_queue, service_base_url=client.base_url)
+        report_context = ServiceReportContext(
+            queue=report_queue, service_base_url=client.base_url
+        )
         handlers.append(
             service.ServiceReportHandler(
                 client=client,
@@ -1370,7 +1501,10 @@ def execute(
     if cassette_path is not None:
         # This handler should be first to have logs writing completed when the output handler will display statistic
         handlers.append(
-            cassettes.CassetteWriter(cassette_path, preserve_exact_body_bytes=cassette_preserve_exact_body_bytes)
+            cassettes.CassetteWriter(
+                cassette_path,
+                preserve_exact_body_bytes=cassette_preserve_exact_body_bytes,
+            )
         )
     handlers.append(get_output_handler(workers_num))
     if sanitize_output:
@@ -1393,7 +1527,9 @@ def execute(
         for _handler in handlers:
             _handler.shutdown()
 
-    GLOBAL_HOOK_DISPATCHER.dispatch("after_init_cli_run_handlers", HookContext(), handlers, execution_context)
+    GLOBAL_HOOK_DISPATCHER.dispatch(
+        "after_init_cli_run_handlers", HookContext(), handlers, execution_context
+    )
     event = None
     try:
         for event in event_stream:
@@ -1446,7 +1582,9 @@ def display_handler_error(handler: EventHandler, exc: Exception) -> None:
         trace = exc.__traceback__
     else:
         click.secho("CLI Handler Error", fg="red", bold=True)
-        click.echo(f"\nAn error occurred within your custom CLI handler `{bold(handler.__class__.__name__)}`.")
+        click.echo(
+            f"\nAn error occurred within your custom CLI handler `{bold(handler.__class__.__name__)}`."
+        )
         trace = extract_nth_traceback(exc.__traceback__, 1)
     lines = traceback.format_exception(type(exc), exc, trace)
     message = "".join(lines).strip()
@@ -1489,10 +1627,23 @@ def get_exit_code(event: events.ExecutionEvent) -> int:
 @click.argument("cassette_path", type=click.Path(exists=True))
 @click.option("--id", "id_", help="ID of interaction to replay.", type=str)
 @click.option("--status", help="Status of interactions to replay.", type=str)
-@click.option("--uri", help="A regexp that filters interactions by their request URI.", type=str)
-@click.option("--method", help="A regexp that filters interactions by their request method.", type=str)
-@click.option("--no-color", help="Disable ANSI color escape codes.", type=bool, is_flag=True)
-@click.option("--force-color", help="Explicitly tells to enable ANSI color escape codes.", type=bool, is_flag=True)
+@click.option(
+    "--uri", help="A regexp that filters interactions by their request URI.", type=str
+)
+@click.option(
+    "--method",
+    help="A regexp that filters interactions by their request method.",
+    type=str,
+)
+@click.option(
+    "--no-color", help="Disable ANSI color escape codes.", type=bool, is_flag=True
+)
+@click.option(
+    "--force-color",
+    help="Explicitly tells to enable ANSI color escape codes.",
+    type=bool,
+    is_flag=True,
+)
 @click.option("--verbosity", "-v", help="Increase verbosity of the output.", count=True)
 @with_request_tls_verify
 @with_request_proxy
@@ -1538,8 +1689,12 @@ def replay(
         request_proxy=request_proxy,
     ):
         click.secho(f"  {bold('ID')}              : {replayed.interaction['id']}")
-        click.secho(f"  {bold('URI')}             : {replayed.interaction['request']['uri']}")
-        click.secho(f"  {bold('Old status code')} : {replayed.interaction['response']['status']['code']}")
+        click.secho(
+            f"  {bold('URI')}             : {replayed.interaction['request']['uri']}"
+        )
+        click.secho(
+            f"  {bold('Old status code')} : {replayed.interaction['response']['status']['code']}"
+        )
         click.secho(f"  {bold('New status code')} : {replayed.response.status_code}")
         if verbosity > 0:
             data = replayed.interaction["response"]
@@ -1587,8 +1742,12 @@ def upload(
 
     schemathesis_io_hostname = urlparse(schemathesis_io_url).netloc
     host_data = service.hosts.HostData(schemathesis_io_hostname, hosts_file)
-    token = schemathesis_io_token or service.hosts.get_token(hostname=schemathesis_io_hostname, hosts_file=hosts_file)
-    client = ServiceClient(base_url=schemathesis_io_url, token=token, verify=request_tls_verify)
+    token = schemathesis_io_token or service.hosts.get_token(
+        hostname=schemathesis_io_hostname, hosts_file=hosts_file
+    )
+    client = ServiceClient(
+        base_url=schemathesis_io_url, token=token, verify=request_tls_verify
+    )
     ci_environment = service.ci.environment()
     provider = ci_environment.provider if ci_environment is not None else None
     response = client.upload_report(
@@ -1601,7 +1760,10 @@ def upload(
         host_data.store_correlation_id(response.correlation_id)
         click.echo(f"{response.message}\n{response.next_url}")
     else:
-        error_message(f"Failed to upload report to {schemathesis_io_hostname}: " + bold(response.detail))
+        error_message(
+            f"Failed to upload report to {schemathesis_io_hostname}: "
+            + bold(response.detail)
+        )
         sys.exit(1)
 
 
@@ -1627,7 +1789,13 @@ def auth() -> None:
 )
 @with_request_tls_verify
 @with_hosts_file
-def login(token: str, hostname: str, hosts_file: str, protocol: str, request_tls_verify: bool = True) -> None:
+def login(
+    token: str,
+    hostname: str,
+    hosts_file: str,
+    protocol: str,
+    request_tls_verify: bool = True,
+) -> None:
     """Authenticate with a Schemathesis.io host."""
     import requests
 
@@ -1691,7 +1859,9 @@ def decide_color_output(ctx: click.Context, no_color: bool, force_color: bool) -
 
 @HookDispatcher.register_spec([HookScope.GLOBAL])
 def after_init_cli_run_handlers(
-    context: HookContext, handlers: list[EventHandler], execution_context: ExecutionContext
+    context: HookContext,
+    handlers: list[EventHandler],
+    execution_context: ExecutionContext,
 ) -> None:
     """Called after CLI hooks are initialized.
 
@@ -1700,7 +1870,9 @@ def after_init_cli_run_handlers(
 
 
 @HookDispatcher.register_spec([HookScope.GLOBAL])
-def process_call_kwargs(context: HookContext, case: Case, kwargs: dict[str, Any]) -> None:
+def process_call_kwargs(
+    context: HookContext, case: Case, kwargs: dict[str, Any]
+) -> None:
     """Called before every network call in CLI tests.
 
     Aims to modify the argument passed to `case.call` / `case.call_wsgi` / `case.call_asgi`.

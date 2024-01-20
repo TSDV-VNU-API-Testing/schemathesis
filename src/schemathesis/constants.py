@@ -1,4 +1,5 @@
 from importlib import metadata
+
 from .types import NotSet
 
 try:
@@ -17,7 +18,9 @@ GITHUB_APP_LINK = "https://github.com/apps/schemathesis"
 DEFAULT_DEADLINE = 15000
 DEFAULT_RESPONSE_TIMEOUT = 10000
 DEFAULT_STATEFUL_RECURSION_LIMIT = 5
-HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
+HTTP_METHODS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
 RECURSIVE_REFERENCE_ERROR_MESSAGE = (
     "Currently, Schemathesis can't generate data for this operation due to "
     "recursive references in the operation definition. See more information in "
@@ -28,12 +31,16 @@ SERIALIZERS_SUGGESTION_MESSAGE = (
     "and Schemathesis will be able to make API calls with this media type. \n"
     "See https://schemathesis.readthedocs.io/en/stable/how.html#payload-serialization for more information."
 )
-EXTENSIONS_DOCUMENTATION_URL = "https://schemathesis.readthedocs.io/en/stable/extending.html"
+EXTENSIONS_DOCUMENTATION_URL = (
+    "https://schemathesis.readthedocs.io/en/stable/extending.html"
+)
 ISSUE_TRACKER_URL = (
     "https://github.com/schemathesis/schemathesis/issues/new?"
     "labels=Status%3A%20Needs%20Triage%2C+Type%3A+Bug&template=bug_report.md&title=%5BBUG%5D"
 )
-FLAKY_FAILURE_MESSAGE = "[FLAKY] Schemathesis was not able to reliably reproduce this failure"
+FLAKY_FAILURE_MESSAGE = (
+    "[FLAKY] Schemathesis was not able to reliably reproduce this failure"
+)
 BOM_MARK = "\ufeff"
 WAIT_FOR_SCHEMA_INTERVAL = 0.05
 HOOKS_MODULE_ENV_VAR = "SCHEMATHESIS_HOOKS"
