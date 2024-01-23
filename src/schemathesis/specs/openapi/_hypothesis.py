@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import string
 from base64 import b64encode
 from contextlib import suppress
@@ -13,20 +14,20 @@ from hypothesis_jsonschema import from_schema
 from requests.auth import _basic_auth_str
 from requests.structures import CaseInsensitiveDict
 
-from ...constants import NOT_SET
-from .formats import STRING_FORMATS
 from ... import auths, serializers
+from ...constants import NOT_SET
+from ...exceptions import BodyInGetRequestError, SerializationNotPossible
 from ...generation import DataGenerationMethod, GenerationConfig
-from ...internal.copy import fast_deepcopy
-from ...exceptions import SerializationNotPossible, BodyInGetRequestError
 from ...hooks import HookContext, HookDispatcher, apply_to_all_dispatchers
+from ...internal.copy import fast_deepcopy
 from ...internal.validation import is_illegal_surrogate
 from ...models import APIOperation, Case, cant_serialize
+from ...serializers import Binary
 from ...transports.headers import has_invalid_characters, is_latin_1_encodable
 from ...types import NotSet
-from ...serializers import Binary
 from ...utils import compose, skip
 from .constants import LOCATION_TO_CONTAINER
+from .formats import STRING_FORMATS
 from .negative import negative_schema
 from .negative.utils import can_negate
 from .parameters import OpenAPIBody, parameters_to_json_schema
@@ -35,7 +36,9 @@ from .utils import is_header_location
 HEADER_FORMAT = "_header_value"
 PARAMETERS = frozenset(("path_parameters", "headers", "cookies", "query", "body"))
 SLASH = "/"
-StrategyFactory = Callable[[Dict[str, Any], str, str, Optional[str], GenerationConfig], st.SearchStrategy]
+StrategyFactory = Callable[
+    [Dict[str, Any], str, str, Optional[str], GenerationConfig], st.SearchStrategy
+]
 
 
 @lru_cache
@@ -48,14 +51,21 @@ def get_default_format_strategies() -> dict[str, st.SearchStrategy]:
     latin1_text = st.text(alphabet=st.characters(min_codepoint=0, max_codepoint=255))
 
     # Define valid characters here to avoid filtering them out in `is_valid_header` later
-    header_value = st.text(alphabet=st.characters(min_codepoint=0, max_codepoint=255, blacklist_characters="\n\r"))
+    header_value = st.text(
+        alphabet=st.characters(
+            min_codepoint=0, max_codepoint=255, blacklist_characters="\n\r"
+        )
+    )
 
     return {
         "binary": st.binary().map(Binary),
         "byte": st.binary().map(lambda x: b64encode(x).decode()),
         # RFC 7230, Section 3.2.6
         "_header_name": st.text(
-            min_size=1, alphabet=st.sampled_from("!#$%&'*+-.^_`|~" + string.digits + string.ascii_letters)
+            min_size=1,
+            alphabet=st.sampled_from(
+                "!#$%&'*+-.^_`|~" + string.digits + string.ascii_letters
+            ),
         ),
         # Header values with leading non-visible chars can't be sent with `requests`
         HEADER_FORMAT: header_value.map(str.lstrip),
@@ -98,6 +108,7 @@ def get_case_strategy(
     cookies: NotSet | dict[str, Any] = NOT_SET,
     query: NotSet | dict[str, Any] = NOT_SET,
     body: Any = NOT_SET,
+    prev_stateful_case: Optional[Case] = None,
 ) -> Any:
     """A strategy that creates `Case` instances.
 
@@ -118,11 +129,24 @@ def get_case_strategy(
     generation_config = generation_config or GenerationConfig()
 
     path_parameters_ = generate_parameter(
-        "path", path_parameters, operation, draw, context, hooks, generator, generation_config
+        "path",
+        path_parameters,
+        operation,
+        draw,
+        context,
+        hooks,
+        generator,
+        generation_config,
     )
-    headers_ = generate_parameter("header", headers, operation, draw, context, hooks, generator, generation_config)
-    cookies_ = generate_parameter("cookie", cookies, operation, draw, context, hooks, generator, generation_config)
-    query_ = generate_parameter("query", query, operation, draw, context, hooks, generator, generation_config)
+    headers_ = generate_parameter(
+        "header", headers, operation, draw, context, hooks, generator, generation_config
+    )
+    cookies_ = generate_parameter(
+        "cookie", cookies, operation, draw, context, hooks, generator, generation_config
+    )
+    query_ = generate_parameter(
+        "query", query, operation, draw, context, hooks, generator, generation_config
+    )
 
     media_type = None
     if body is NOT_SET:
@@ -130,7 +154,11 @@ def get_case_strategy(
             body_generator = generator
             if generator.is_negative:
                 # Consider only schemas that are possible to negate
-                candidates = [item for item in operation.body.items if can_negate(item.as_json_schema(operation))]
+                candidates = [
+                    item
+                    for item in operation.body.items
+                    if can_negate(item.as_json_schema(operation))
+                ]
                 # Not possible to negate body, fallback to positive data generation
                 if not candidates:
                     candidates = operation.body.items
@@ -139,23 +167,34 @@ def get_case_strategy(
             else:
                 candidates = operation.body.items
             parameter = draw(st.sampled_from(candidates))
-            strategy = _get_body_strategy(parameter, strategy_factory, operation, generation_config)
+            strategy = _get_body_strategy(
+                parameter, strategy_factory, operation, generation_config
+            )
             strategy = apply_hooks(operation, context, hooks, strategy, "body")
             # Parameter may have a wildcard media type. In this case, choose any supported one
-            possible_media_types = sorted(serializers.get_matching_media_types(parameter.media_type))
+            possible_media_types = sorted(
+                serializers.get_matching_media_types(parameter.media_type)
+            )
             if not possible_media_types:
                 all_media_types = operation.get_request_payload_content_types()
-                if all(serializers.get_first_matching_media_type(media_type) is None for media_type in all_media_types):
+                if all(
+                    serializers.get_first_matching_media_type(media_type) is None
+                    for media_type in all_media_types
+                ):
                     # None of media types defined for this operation are not supported
                     raise SerializationNotPossible.from_media_types(*all_media_types)
                 # Other media types are possible - avoid choosing this media type in the future
                 cant_serialize(parameter.media_type)
             media_type = draw(st.sampled_from(possible_media_types))
-            body_ = ValueContainer(value=draw(strategy), location="body", generator=body_generator)
+            body_ = ValueContainer(
+                value=draw(strategy), location="body", generator=body_generator
+            )
         else:
             body_ = ValueContainer(value=body, location="body", generator=None)
     else:
-        media_types = operation.get_request_payload_content_types() or ["application/json"]
+        media_types = operation.get_request_payload_content_types() or [
+            "application/json"
+        ]
         # Take the first available media type.
         # POSSIBLE IMPROVEMENT:
         #   - Test examples for each available media type on Open API 2.0;
@@ -164,21 +203,42 @@ def get_case_strategy(
         media_type = media_types[0]
         body_ = ValueContainer(value=body, location="body", generator=None)
 
-    if operation.schema.validate_schema and operation.method.upper() == "GET" and operation.body:
+    if (
+        operation.schema.validate_schema
+        and operation.method.upper() == "GET"
+        and operation.body
+    ):
         raise BodyInGetRequestError("GET requests should not contain body parameters.")
     # If we need to generate negative cases but no generated values were negated, then skip the whole test
-    if generator.is_negative and not any_negated_values([query_, cookies_, headers_, path_parameters_, body_]):
+    if generator.is_negative and not any_negated_values(
+        [query_, cookies_, headers_, path_parameters_, body_]
+    ):
         skip(operation.verbose_name)
     instance = Case(
         operation=operation,
         media_type=media_type,
         path_parameters=path_parameters_.value,
-        headers=CaseInsensitiveDict(headers_.value) if headers_.value is not None else headers_.value,
+        headers=CaseInsensitiveDict(headers_.value)
+        if headers_.value is not None
+        else headers_.value,
         cookies=cookies_.value,
         query=query_.value,
         body=body_.value,
         data_generation_method=generator,
+        prev_stateful_case=prev_stateful_case,
     )
+
+    print("\nCase Id: " + str(instance.case_id))
+    print(
+        "Prev case id: "
+        + (
+            str(prev_stateful_case.case_id)
+            if prev_stateful_case is not None
+            else "None"
+        )
+    )
+    print("-------------")
+
     auth_context = auths.AuthContext(
         operation=operation,
         app=operation.app,
@@ -198,11 +258,16 @@ def _get_body_strategy(
 ) -> st.SearchStrategy:
     # The cache key relies on object ids, which means that the parameter should not be mutated
     # Note, the parent schema is not included as each parameter belong only to one schema
-    if parameter in _BODY_STRATEGIES_CACHE and strategy_factory in _BODY_STRATEGIES_CACHE[parameter]:
+    if (
+        parameter in _BODY_STRATEGIES_CACHE
+        and strategy_factory in _BODY_STRATEGIES_CACHE[parameter]
+    ):
         return _BODY_STRATEGIES_CACHE[parameter][strategy_factory]
     schema = parameter.as_json_schema(operation)
     schema = operation.schema.prepare_schema(schema)
-    strategy = strategy_factory(schema, operation.verbose_name, "body", parameter.media_type, generation_config)
+    strategy = strategy_factory(
+        schema, operation.verbose_name, "body", parameter.media_type, generation_config
+    )
     if not parameter.is_required:
         strategy |= st.just(NOT_SET)
     _BODY_STRATEGIES_CACHE.setdefault(parameter, {})[strategy_factory] = strategy
@@ -225,10 +290,14 @@ def get_parameters_value(
     generate those parts.
     """
     if isinstance(value, NotSet) or not value:
-        strategy = get_parameters_strategy(operation, strategy_factory, location, generation_config)
+        strategy = get_parameters_strategy(
+            operation, strategy_factory, location, generation_config
+        )
         strategy = apply_hooks(operation, context, hooks, strategy, location)
         return draw(strategy)
-    strategy = get_parameters_strategy(operation, strategy_factory, location, generation_config, exclude=value.keys())
+    strategy = get_parameters_strategy(
+        operation, strategy_factory, location, generation_config, exclude=value.keys()
+    )
     strategy = apply_hooks(operation, context, hooks, strategy, location)
     new = draw(strategy)
     if new is not None:
@@ -252,12 +321,18 @@ class ValueContainer:
     @property
     def is_generated(self) -> bool:
         """If value was generated."""
-        return self.generator is not None and (self.location == "body" or self.value is not None)
+        return self.generator is not None and (
+            self.location == "body" or self.value is not None
+        )
 
 
 def any_negated_values(values: list[ValueContainer]) -> bool:
     """Check if any generated values are negated."""
-    return any(value.generator == DataGenerationMethod.negative for value in values if value.is_generated)
+    return any(
+        value.generator == DataGenerationMethod.negative
+        for value in values
+        if value.is_generated
+    )
 
 
 def generate_parameter(
@@ -276,7 +351,9 @@ def generate_parameter(
     """
     if generator.is_negative and (
         (location == "path" and not can_negate_path_parameters(operation))
-        or (is_header_location(location) and not can_negate_headers(operation, location))
+        or (
+            is_header_location(location) and not can_negate_headers(operation, location)
+        )
     ):
         # If we can't negate any parameter, generate positive ones
         # If nothing else will be negated, then skip the test completely
@@ -285,7 +362,14 @@ def generate_parameter(
     else:
         strategy_factory = DATA_GENERATION_METHOD_TO_STRATEGY_FACTORY[generator]
     value = get_parameters_value(
-        explicit, location, draw, operation, context, hooks, strategy_factory, generation_config
+        explicit,
+        location,
+        draw,
+        operation,
+        context,
+        hooks,
+        strategy_factory,
+        generation_config,
     )
     used_generator: DataGenerationMethod | None = generator
     if value == explicit:
@@ -328,7 +412,10 @@ def get_parameters_strategy(
     if parameters:
         # The cache key relies on object ids, which means that the parameter should not be mutated
         nested_cache_key = (strategy_factory, location, tuple(sorted(exclude)))
-        if operation in _PARAMETER_STRATEGIES_CACHE and nested_cache_key in _PARAMETER_STRATEGIES_CACHE[operation]:
+        if (
+            operation in _PARAMETER_STRATEGIES_CACHE
+            and nested_cache_key in _PARAMETER_STRATEGIES_CACHE[operation]
+        ):
             return _PARAMETER_STRATEGIES_CACHE[operation][nested_cache_key]
         schema = parameters_to_json_schema(operation, parameters)
         if not operation.schema.validate_schema and location == "path":
@@ -347,7 +434,9 @@ def get_parameters_strategy(
             # Nothing to negate - all properties were excluded
             strategy = st.none()
         else:
-            strategy = strategy_factory(schema, operation.verbose_name, location, None, generation_config)
+            strategy = strategy_factory(
+                schema, operation.verbose_name, location, None, generation_config
+            )
             serialize = operation.get_parameter_serializer(location)
             if serialize is not None:
                 strategy = strategy.map(serialize)
@@ -370,7 +459,9 @@ def get_parameters_strategy(
             }.get(location)
             if map_func:
                 strategy = strategy.map(map_func)  # type: ignore
-        _PARAMETER_STRATEGIES_CACHE.setdefault(operation, {})[nested_cache_key] = strategy
+        _PARAMETER_STRATEGIES_CACHE.setdefault(operation, {})[
+            nested_cache_key
+        ] = strategy
         return strategy
     # No parameters defined for this location
     return st.none()
@@ -414,7 +505,11 @@ def make_positive_strategy(
                 sub_schema.setdefault("format", HEADER_FORMAT)
     return from_schema(
         schema,
-        custom_formats={**get_default_format_strategies(), **STRING_FORMATS, **(custom_formats or {})},
+        custom_formats={
+            **get_default_format_strategies(),
+            **STRING_FORMATS,
+            **(custom_formats or {}),
+        },
         allow_x00=generation_config.allow_x00,
         codec=generation_config.codec,
     )
@@ -422,7 +517,10 @@ def make_positive_strategy(
 
 def _can_skip_header_filter(schema: dict[str, Any]) -> bool:
     # All headers should contain HEADER_FORMAT in order to avoid header filter
-    return all(sub_schema.get("format") == HEADER_FORMAT for sub_schema in schema.get("properties", {}).values())
+    return all(
+        sub_schema.get("format") == HEADER_FORMAT
+        for sub_schema in schema.get("properties", {}).values()
+    )
 
 
 def make_negative_strategy(
@@ -438,7 +536,11 @@ def make_negative_strategy(
         operation_name=operation_name,
         location=location,
         media_type=media_type,
-        custom_formats={**get_default_format_strategies(), **STRING_FORMATS, **(custom_formats or {})},
+        custom_formats={
+            **get_default_format_strategies(),
+            **STRING_FORMATS,
+            **(custom_formats or {}),
+        },
         generation_config=generation_config,
     )
 
@@ -462,7 +564,12 @@ def is_valid_path(parameters: dict[str, Any]) -> bool:
     disallowed_values = (SLASH, "")
 
     return not any(
-        (value in disallowed_values or is_illegal_surrogate(value) or isinstance(value, str) and SLASH in value)
+        (
+            value in disallowed_values
+            or is_illegal_surrogate(value)
+            or isinstance(value, str)
+            and SLASH in value
+        )
         for value in parameters.values()
     )
 

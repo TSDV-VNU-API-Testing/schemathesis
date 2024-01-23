@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 import re
 import threading
@@ -8,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, Callable, Generator, Iterable, cast, TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable, Literal, cast
 from warnings import WarningMessage, catch_warnings
 
 import hypothesis
@@ -19,12 +20,14 @@ from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
 from jsonschema.exceptions import ValidationError
 from requests.auth import HTTPDigestAuth, _basic_auth_str
 
-from ..override import CaseOverride
 from ... import failures, hooks
 from ..._compat import MultipleFailures
 from ...auths import unregister as unregister_auth
-from ...generation import DataGenerationMethod, GenerationConfig
-from ...constants import DEFAULT_STATEFUL_RECURSION_LIMIT, RECURSIVE_REFERENCE_ERROR_MESSAGE, USER_AGENT
+from ...constants import (
+    DEFAULT_STATEFUL_RECURSION_LIMIT,
+    RECURSIVE_REFERENCE_ERROR_MESSAGE,
+    USER_AGENT,
+)
 from ...exceptions import (
     CheckFailed,
     DeadlineExceeded,
@@ -32,28 +35,41 @@ from ...exceptions import (
     NonCheckError,
     OperationSchemaError,
     SkipTest,
+    format_exception,
     get_grouped_exception,
     maybe_set_assertion_message,
-    format_exception,
 )
+from ...generation import DataGenerationMethod, GenerationConfig
 from ...hooks import HookContext, get_all_by_name
-from ...internal.result import Ok
-from ...models import APIOperation, Case, Check, CheckFunction, Status, TestResult, TestResultSet
-from ...runner import events
 from ...internal.datetime import current_datetime
+from ...internal.result import Ok
+from ...models import (
+    APIOperation,
+    Case,
+    Check,
+    CheckFunction,
+    Status,
+    TestResult,
+    TestResultSet,
+)
+from ...runner import events
 from ...schemas import BaseSchema
 from ...stateful import Feedback, Stateful
 from ...targets import Target, TargetContext
 from ...types import RawAuth, RequestCert
 from ...utils import capture_hypothesis_output
+from ..override import CaseOverride
 from ..serialization import SerializedTestResult
 
 if TYPE_CHECKING:
-    from ...transports.responses import WSGIResponse, GenericResponse
+    from ...transports.responses import GenericResponse, WSGIResponse
 
 
 def _should_count_towards_stop(event: events.ExecutionEvent) -> bool:
-    return isinstance(event, events.AfterExecution) and event.status in (Status.error, Status.failure)
+    return isinstance(event, events.AfterExecution) and event.status in (
+        Status.error,
+        Status.failure,
+    )
 
 
 @dataclass
@@ -86,20 +102,27 @@ class BaseRunner:
         event = threading.Event()
         return EventStream(self._generate_events(event), event)
 
-    def _generate_events(self, stop_event: threading.Event) -> Generator[events.ExecutionEvent, None, None]:
+    def _generate_events(
+        self, stop_event: threading.Event
+    ) -> Generator[events.ExecutionEvent, None, None]:
         # If auth is explicitly provided, then the global provider is ignored
         if self.auth is not None:
             unregister_auth()
         results = TestResultSet(seed=self.seed)
 
         initialized = events.Initialized.from_schema(
-            schema=self.schema, count_operations=self.count_operations, count_links=self.count_links, seed=self.seed
+            schema=self.schema,
+            count_operations=self.count_operations,
+            count_links=self.count_links,
+            seed=self.seed,
         )
 
         def _finish() -> events.Finished:
             if has_all_not_found(results):
                 results.add_warning(ALL_NOT_FOUND_WARNING_MESSAGE)
-            return events.Finished.from_results(results=results, running_time=time.monotonic() - initialized.start_time)
+            return events.Finished.from_results(
+                results=results, running_time=time.monotonic() - initialized.start_time
+            )
 
         if stop_event.is_set():
             yield _finish()
@@ -151,11 +174,17 @@ class BaseRunner:
         def as_strategy_kwargs(_operation: APIOperation) -> dict[str, Any]:
             kw = {}
             if self.override is not None:
-                for location, override in self.override.for_operation(_operation).items():
+                for location, override in self.override.for_operation(
+                    _operation
+                ).items():
                     if override:
                         kw[location] = override
             if headers:
-                kw["headers"] = {key: value for key, value in headers.items() if key.lower() != "user-agent"}
+                kw["headers"] = {
+                    key: value
+                    for key, value in headers.items()
+                    if key.lower() != "user-agent"
+                }
             return kw
 
         for result in maker(
@@ -211,7 +240,10 @@ class BaseRunner:
             else:
                 # Schema errors
                 yield from handle_schema_error(
-                    result.err(), results, self.schema.data_generation_methods, recursion_level
+                    result.err(),
+                    results,
+                    self.schema.data_generation_methods,
+                    recursion_level,
                 )
 
 
@@ -330,7 +362,9 @@ def run_test(
     test_start_time = time.monotonic()
     setup_hypothesis_database_key(test, operation)
     try:
-        with catch_warnings(record=True) as warnings, capture_hypothesis_output() as hypothesis_output:
+        with catch_warnings(
+            record=True
+        ) as warnings, capture_hypothesis_output() as hypothesis_output:
             test(
                 checks,
                 targets,
@@ -372,7 +406,11 @@ def run_test(
     except hypothesis.errors.Unsatisfiable:
         # We need more clear error message here
         status = Status.error
-        result.add_error(hypothesis.errors.Unsatisfiable("Failed to generate test cases for this API operation"))
+        result.add_error(
+            hypothesis.errors.Unsatisfiable(
+                "Failed to generate test cases for this API operation"
+            )
+        )
     except KeyboardInterrupt:
         yield events.Interrupted()
         return
@@ -385,13 +423,17 @@ def run_test(
         result.add_error(error)
     except HypothesisRefResolutionError:
         status = Status.error
-        result.add_error(hypothesis.errors.Unsatisfiable(RECURSIVE_REFERENCE_ERROR_MESSAGE))
+        result.add_error(
+            hypothesis.errors.Unsatisfiable(RECURSIVE_REFERENCE_ERROR_MESSAGE)
+        )
     except InvalidArgument as error:
         status = Status.error
         message = get_invalid_regular_expression_message(warnings)
         if message:
             # `hypothesis-jsonschema` emits a warning on invalid regular expression syntax
-            result.add_error(InvalidRegularExpression.from_hypothesis_jsonschema_message(message))
+            result.add_error(
+                InvalidRegularExpression.from_hypothesis_jsonschema_message(message)
+            )
         else:
             result.add_error(error)
     except hypothesis.errors.DeadlineExceeded as error:
@@ -410,7 +452,11 @@ def run_test(
     results.append(result)
     for status_code in (401, 403):
         if has_too_many_responses_with_status(result, status_code):
-            results.add_warning(TOO_MANY_RESPONSES_WARNING_TEMPLATE.format(f"`{operation.verbose_name}`", status_code))
+            results.add_warning(
+                TOO_MANY_RESPONSES_WARNING_TEMPLATE.format(
+                    f"`{operation.verbose_name}`", status_code
+                )
+            )
     yield events.AfterExecution.from_result(
         result=result,
         status=status,
@@ -422,9 +468,7 @@ def run_test(
     )
 
 
-TOO_MANY_RESPONSES_WARNING_TEMPLATE = (
-    "Most of the responses from {} have a {} status code. Did you specify proper API credentials?"
-)
+TOO_MANY_RESPONSES_WARNING_TEMPLATE = "Most of the responses from {} have a {} status code. Did you specify proper API credentials?"
 TOO_MANY_RESPONSES_THRESHOLD = 0.9
 
 
@@ -442,7 +486,9 @@ def has_too_many_responses_with_status(result: TestResult, status_code: int) -> 
     return unauthorized_count / total >= TOO_MANY_RESPONSES_THRESHOLD
 
 
-ALL_NOT_FOUND_WARNING_MESSAGE = "All API responses have a 404 status code. Did you specify the proper API location?"
+ALL_NOT_FOUND_WARNING_MESSAGE = (
+    "All API responses have a 404 status code. Did you specify the proper API location?"
+)
 
 
 def has_all_not_found(results: TestResultSet) -> bool:
@@ -474,7 +520,9 @@ def setup_hypothesis_database_key(test: Callable, operation: APIOperation) -> No
     test.hypothesis.inner_test._hypothesis_internal_add_digest = extra  # type: ignore
 
 
-def get_invalid_regular_expression_message(warnings: list[WarningMessage]) -> str | None:
+def get_invalid_regular_expression_message(
+    warnings: list[WarningMessage],
+) -> str | None:
     for warning in warnings:
         message = str(warning.message)
         if "is not valid syntax for a Python regular expression" in message:
@@ -487,7 +535,10 @@ def reraise(operation: APIOperation) -> OperationSchemaError:
         operation.schema.validate()
     except ValidationError as exc:
         return OperationSchemaError.from_jsonschema_error(
-            exc, path=operation.path, method=operation.method, full_path=operation.schema.get_full_path(operation.path)
+            exc,
+            path=operation.path,
+            method=operation.method,
+            full_path=operation.schema.get_full_path(operation.path),
         )
     return OperationSchemaError("Unknown schema error")
 
@@ -527,7 +578,11 @@ def run_checks(
             context = error.context
         else:
             context = None
-        check_results.append(result.add_failure(check_name, copied_case, response, elapsed_time, msg, context))
+        check_results.append(
+            result.add_failure(
+                check_name, copied_case, response, elapsed_time, msg, context
+            )
+        )
 
     for check in checks:
         check_name = check.__name__
@@ -535,7 +590,9 @@ def run_checks(
         try:
             skip_check = check(response, copied_case)
             if not skip_check:
-                check_result = result.add_success(check_name, copied_case, response, elapsed_time)
+                check_result = result.add_success(
+                    check_name, copied_case, response, elapsed_time
+                )
                 check_results.append(check_result)
         except AssertionError as exc:
             add_single_failure(exc)
@@ -553,13 +610,17 @@ def run_checks(
                 response,
                 elapsed_time,
                 message,
-                failures.ResponseTimeExceeded(message=message, elapsed=elapsed_time, deadline=max_response_time),
+                failures.ResponseTimeExceeded(
+                    message=message, elapsed=elapsed_time, deadline=max_response_time
+                ),
             )
         else:
             result.add_success("max_response_time", case, response, elapsed_time)
 
     if errors:
-        raise get_grouped_exception(case.operation.verbose_name, *errors)(causes=tuple(errors))
+        raise get_grouped_exception(case.operation.verbose_name, *errors)(
+            causes=tuple(errors)
+        )
 
 
 def run_targets(targets: Iterable[Callable], context: TargetContext) -> None:
@@ -568,7 +629,9 @@ def run_targets(targets: Iterable[Callable], context: TargetContext) -> None:
         hypothesis.target(value, label=target.__name__)
 
 
-def add_cases(case: Case, response: GenericResponse, test: Callable, *args: Any) -> None:
+def add_cases(
+    case: Case, response: GenericResponse, test: Callable, *args: Any
+) -> None:
     context = HookContext(case.operation)
     for case_hook in get_all_by_name("add_case"):
         _case = case_hook(context, case.partial_deepcopy(), response)
@@ -596,13 +659,20 @@ class ErrorCollector:
         return self
 
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> Literal[False]:
         # Don't do anything special if:
         #   - Tests are successful
         #   - Checks failed
         #   - The testing process is interrupted
-        if not exc_type or issubclass(exc_type, CheckFailed) or not issubclass(exc_type, Exception):
+        if (
+            not exc_type
+            or issubclass(exc_type, CheckFailed)
+            or not issubclass(exc_type, Exception)
+        ):
             return False
         # These exceptions are needed for control flow on the Hypothesis side. E.g. rejecting unsatisfiable examples
         if isinstance(exc_val, HypothesisException):
@@ -613,7 +683,9 @@ class ErrorCollector:
         raise NonCheckError from None
 
 
-def _force_data_generation_method(values: list[DataGenerationMethod], case: Case) -> None:
+def _force_data_generation_method(
+    values: list[DataGenerationMethod], case: Case
+) -> None:
     # Set data generation method to the one that actually used
     data_generation_method = cast(DataGenerationMethod, case.data_generation_method)
     values[:] = [data_generation_method]
@@ -695,15 +767,27 @@ def _network_test(
         response = case.call(**kwargs)
     except CheckFailed as exc:
         check_name = "request_timeout"
-        requests_kwargs = case.as_requests_kwargs(base_url=case.get_full_base_url(), headers=headers)
+        requests_kwargs = case.as_requests_kwargs(
+            base_url=case.get_full_base_url(), headers=headers
+        )
         request = requests.Request(**requests_kwargs).prepare()
-        elapsed = cast(float, timeout)  # It is defined and not empty, since the exception happened
+        elapsed = cast(
+            float, timeout
+        )  # It is defined and not empty, since the exception happened
         check_result = result.add_failure(
-            check_name, case, None, elapsed, f"Response timed out after {1000 * elapsed:.2f}ms", exc.context, request
+            check_name,
+            case,
+            None,
+            elapsed,
+            f"Response timed out after {1000 * elapsed:.2f}ms",
+            exc.context,
+            request,
         )
         check_results.append(check_result)
         raise exc
-    context = TargetContext(case=case, response=response, response_time=response.elapsed.total_seconds())
+    context = TargetContext(
+        case=case, response=response, response_time=response.elapsed.total_seconds()
+    )
     run_targets(targets, context)
     status = Status.success
     try:
@@ -720,14 +804,21 @@ def _network_test(
         status = Status.failure
         raise
     finally:
+        # if feedback.stateful == Stateful.links:
+        # print("stateful")
+        # do something
+
         feedback.add_test_case(case, response)
         if store_interactions:
+            # Lưu lại interaction
             result.store_requests_response(case, response, status, check_results)
     return response
 
 
 @contextmanager
-def get_session(auth: HTTPDigestAuth | RawAuth | None = None) -> Generator[requests.Session, None, None]:
+def get_session(
+    auth: HTTPDigestAuth | RawAuth | None = None,
+) -> Generator[requests.Session, None, None]:
     with requests.Session() as session:
         if auth is not None:
             session.auth = auth
@@ -813,7 +904,9 @@ def _wsgi_test(
     finally:
         feedback.add_test_case(case, response)
         if store_interactions:
-            result.store_wsgi_response(case, response, headers, elapsed, status, check_results)
+            result.store_wsgi_response(
+                case, response, headers, elapsed, status, check_results
+            )
     return response
 
 
@@ -884,7 +977,9 @@ def _asgi_test(
     kwargs: dict[str, Any] = {"headers": headers}
     hooks.dispatch("process_call_kwargs", hook_context, case, kwargs)
     response = case.call_asgi(**kwargs)
-    context = TargetContext(case=case, response=response, response_time=response.elapsed.total_seconds())
+    context = TargetContext(
+        case=case, response=response, response_time=response.elapsed.total_seconds()
+    )
     run_targets(targets, context)
     status = Status.success
     check_results: list[Check] = []

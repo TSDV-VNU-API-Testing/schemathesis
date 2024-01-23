@@ -3,22 +3,21 @@
 Based on https://swagger.io/docs/specification/links/
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from difflib import get_close_matches
-from typing import Any, Generator, NoReturn, Sequence, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Generator, NoReturn, Sequence, Union
 
+from ...constants import NOT_SET
+from ...internal.copy import fast_deepcopy
 from ...models import APIOperation, Case
 from ...parameters import ParameterSet
 from ...stateful import ParsedData, StatefulTest
 from ...stateful.state_machine import Direction
 from ...types import NotSet
-
-from ...constants import NOT_SET
-from ...internal.copy import fast_deepcopy
 from . import expressions
 from .constants import LOCATION_TO_CONTAINER
 from .parameters import OpenAPI20Body, OpenAPI30Body, OpenAPIParameter
-
 
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse
@@ -38,7 +37,12 @@ class Link(StatefulTest):
             )
 
     @classmethod
-    def from_definition(cls, name: str, definition: dict[str, dict[str, Any]], source_operation: APIOperation) -> Link:
+    def from_definition(
+        cls,
+        name: str,
+        definition: dict[str, dict[str, Any]],
+        source_operation: APIOperation,
+    ) -> Link:
         # Links can be behind a reference
         _, definition = source_operation.schema.resolver.resolve_in_scope(  # type: ignore
             definition, source_operation.definition.scope
@@ -54,16 +58,20 @@ class Link(StatefulTest):
             name=name,
             operation=operation,
             parameters=definition.get("parameters", {}),
-            request_body=definition.get("requestBody", NOT_SET),  # `None` might be a valid value - `null`
+            request_body=definition.get(
+                "requestBody", NOT_SET
+            ),  # `None` might be a valid value - `null`
         )
 
     def parse(self, case: Case, response: GenericResponse) -> ParsedData:
         """Parse data into a structure expected by links definition."""
         context = expressions.ExpressionContext(case=case, response=response)
         parameters = {
-            parameter: expressions.evaluate(expression, context) for parameter, expression in self.parameters.items()
+            parameter: expressions.evaluate(expression, context)
+            for parameter, expression in self.parameters.items()
         }
         return ParsedData(
+            original_case=case,
             parameters=parameters,
             # https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.3.md#link-object
             # > A literal value or {expression} to use as a request body when calling the target operation.
@@ -109,10 +117,14 @@ class Link(StatefulTest):
                     new_parameter: OpenAPIParameter
                     if isinstance(parameter, OpenAPI30Body):
                         new_parameter = parameter.__class__(
-                            definition, media_type=parameter.media_type, required=parameter.required
+                            definition,
+                            media_type=parameter.media_type,
+                            required=parameter.required,
                         )
                     elif isinstance(parameter, OpenAPI20Body):
-                        new_parameter = parameter.__class__(definition, media_type=parameter.media_type)
+                        new_parameter = parameter.__class__(
+                            definition, media_type=parameter.media_type
+                        )
                     else:
                         new_parameter = parameter.__class__(definition)
                     components[LOCATION_TO_CONTAINER[location]].add(new_parameter)
@@ -121,7 +133,9 @@ class Link(StatefulTest):
                     components[LOCATION_TO_CONTAINER[location]].add(parameter)
         return self.operation.clone(**components)
 
-    def _get_container_by_parameter_name(self, full_name: str, templates: dict[str, dict[str, dict[str, Any]]]) -> list:
+    def _get_container_by_parameter_name(
+        self, full_name: str, templates: dict[str, dict[str, dict[str, Any]]]
+    ) -> list:
         """Detect in what request part the parameters is defined."""
         location: str | None
         try:
@@ -150,7 +164,9 @@ class Link(StatefulTest):
         )
 
 
-def get_links(response: GenericResponse, operation: APIOperation, field: str) -> Sequence[Link]:
+def get_links(
+    response: GenericResponse, operation: APIOperation, field: str
+) -> Sequence[Link]:
     """Get `x-links` / `links` definitions from the schema."""
     responses = operation.definition.resolved["responses"]
     if str(response.status_code) in responses:
@@ -160,7 +176,10 @@ def get_links(response: GenericResponse, operation: APIOperation, field: str) ->
     else:
         response_definition = responses.get("default", {})
     links = response_definition.get(field, {})
-    return [Link.from_definition(name, definition, operation) for name, definition in links.items()]
+    return [
+        Link.from_definition(name, definition, operation)
+        for name, definition in links.items()
+    ]
 
 
 @dataclass(repr=False)
@@ -191,7 +210,9 @@ class OpenAPILink(Direction):
         self.set_body(case, context)
         case.set_source(context.response, context.case, elapsed)
 
-    def set_parameters(self, case: Case, context: expressions.ExpressionContext) -> None:
+    def set_parameters(
+        self, case: Case, context: expressions.ExpressionContext
+    ) -> None:
         for location, name, expression in self.parameters:
             container = get_container(case, location, name)
             # Might happen if there is directly specified container,
@@ -199,7 +220,9 @@ class OpenAPILink(Direction):
             # Therefore the container is empty, otherwise it will be at least an empty object
             if container is None:
                 message = f"No such parameter in `{case.operation.method.upper()} {case.operation.path}`: `{name}`."
-                possibilities = [param.name for param in case.operation.definition.parameters]
+                possibilities = [
+                    param.name for param in case.operation.definition.parameters
+                ]
                 matches = get_close_matches(name, possibilities)
                 if matches:
                     message += f" Did you mean `{matches[0]}`?"
@@ -226,7 +249,9 @@ def get_container(case: Case, location: str | None, name: str) -> dict[str, Any]
                 container_name = LOCATION_TO_CONTAINER[param.location]
                 break
         else:
-            raise ValueError(f"Parameter `{name}` is not defined in API operation `{case.operation.verbose_name}`")
+            raise ValueError(
+                f"Parameter `{name}` is not defined in API operation `{case.operation.verbose_name}`"
+            )
     return getattr(case, container_name)
 
 
@@ -245,16 +270,22 @@ def normalize_parameter(parameter: str, expression: str) -> tuple[str | None, st
         return None, parameter, expression
 
 
-def get_all_links(operation: APIOperation) -> Generator[tuple[str, OpenAPILink], None, None]:
+def get_all_links(
+    operation: APIOperation,
+) -> Generator[tuple[str, OpenAPILink], None, None]:
     for status_code, definition in operation.definition.resolved["responses"].items():
         for name, link_definition in definition.get(operation.schema.links_field, {}).items():  # type: ignore
-            yield status_code, OpenAPILink(name, status_code, link_definition, operation)
+            yield status_code, OpenAPILink(
+                name, status_code, link_definition, operation
+            )
 
 
 StatusCode = Union[str, int]
 
 
-def _get_response_by_status_code(responses: dict[StatusCode, dict[str, Any]], status_code: str | int) -> dict:
+def _get_response_by_status_code(
+    responses: dict[StatusCode, dict[str, Any]], status_code: str | int
+) -> dict:
     if isinstance(status_code, int):
         # Invalid schemas may contain status codes as integers
         if status_code in responses:

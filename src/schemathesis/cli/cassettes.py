@@ -205,6 +205,8 @@ http_interactions:"""
                 # Body payloads are handled via separate `stream.write` calls to avoid some allocations
                 stream.write(
                     f"""\n- id: '{current_id}'
+  interaction_id: '{interaction.case.case_id}'
+  prev_id: '{interaction.case.prev_stateful_case.case_id if interaction.case.prev_stateful_case is not None else "None" }'
   status: '{status}'
   seed: '{item.seed}'
   thread_id: {item.thread_id}

@@ -1,8 +1,9 @@
 """High-level API for creating Hypothesis tests."""
 from __future__ import annotations
+
 import asyncio
 import warnings
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import hypothesis
 from hypothesis import Phase
@@ -12,9 +13,9 @@ from hypothesis.internal.reflection import proxies
 from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
 
 from .auths import get_auth_storage_from_test
-from .generation import DataGenerationMethod, GenerationConfig
 from .constants import DEFAULT_DEADLINE
 from .exceptions import OperationSchemaError
+from .generation import DataGenerationMethod, GenerationConfig
 from .hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher
 from .models import APIOperation, Case
 from .utils import GivenInput, combine_strategies
@@ -22,6 +23,7 @@ from .utils import GivenInput, combine_strategies
 
 def create_test(
     *,
+    prev_stateful_case: Optional[Case] = None,
     operation: APIOperation,
     test: Callable,
     settings: hypothesis.settings | None = None,
@@ -44,6 +46,7 @@ def create_test(
                 data_generation_method=data_generation_method,
                 generation_config=generation_config,
                 **(as_strategy_kwargs or {}),
+                prev_stateful_case=prev_stateful_case,
             )
         )
     strategy = combine_strategies(strategies)
@@ -72,7 +75,9 @@ def create_test(
         existing_settings = remove_explain_phase(existing_settings)
         wrapped_test._hypothesis_internal_use_settings = existing_settings  # type: ignore
         if Phase.explicit in existing_settings.phases:
-            wrapped_test = add_examples(wrapped_test, operation, hook_dispatcher=hook_dispatcher)
+            wrapped_test = add_examples(
+                wrapped_test, operation, hook_dispatcher=hook_dispatcher
+            )
     return wrapped_test
 
 
@@ -80,10 +85,15 @@ def setup_default_deadline(wrapped_test: Callable) -> None:
     # Quite hacky, but it is the simplest way to set up the default deadline value without affecting non-Schemathesis
     # tests globally
     existing_settings = _get_hypothesis_settings(wrapped_test)
-    if existing_settings is not None and existing_settings.deadline == hypothesis.settings.default.deadline:
+    if (
+        existing_settings is not None
+        and existing_settings.deadline == hypothesis.settings.default.deadline
+    ):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", HypothesisWarning)
-            new_settings = hypothesis.settings(existing_settings, deadline=DEFAULT_DEADLINE)
+            new_settings = hypothesis.settings(
+                existing_settings, deadline=DEFAULT_DEADLINE
+            )
         wrapped_test._hypothesis_internal_use_settings = new_settings  # type: ignore
 
 
@@ -109,10 +119,17 @@ def make_async_test(test: Callable) -> Callable:
     return async_run
 
 
-def add_examples(test: Callable, operation: APIOperation, hook_dispatcher: HookDispatcher | None = None) -> Callable:
+def add_examples(
+    test: Callable,
+    operation: APIOperation,
+    hook_dispatcher: HookDispatcher | None = None,
+) -> Callable:
     """Add examples to the Hypothesis test, if they are specified in the schema."""
     try:
-        examples: list[Case] = [get_single_example(strategy) for strategy in operation.get_strategies_from_examples()]
+        examples: list[Case] = [
+            get_single_example(strategy)
+            for strategy in operation.get_strategies_from_examples()
+        ]
     except (OperationSchemaError, HypothesisRefResolutionError, Unsatisfiable):
         # Invalid schema:
         # In this case, the user didn't pass `--validate-schema=false` and see an error in the output anyway,

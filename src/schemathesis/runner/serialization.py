@@ -3,28 +3,29 @@
 They all consist of primitive types and don't have references to schemas, app, etc.
 """
 from __future__ import annotations
+
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from ..transports import serialize_payload
 from ..code_samples import get_excluded_headers
 from ..exceptions import (
+    BodyInGetRequestError,
+    DeadlineExceeded,
     FailureContext,
     InternalError,
-    make_unique_by_key,
-    format_exception,
-    extract_requests_exception_details,
-    RuntimeErrorType,
-    DeadlineExceeded,
-    OperationSchemaError,
-    BodyInGetRequestError,
     InvalidRegularExpression,
+    OperationSchemaError,
+    RuntimeErrorType,
     SerializationError,
     UnboundPrefixError,
+    extract_requests_exception_details,
+    format_exception,
+    make_unique_by_key,
 )
 from ..models import Case, Check, Interaction, Request, Response, Status, TestResult
+from ..transports import serialize_payload
 
 if TYPE_CHECKING:
     import hypothesis.errors
@@ -53,7 +54,9 @@ class SerializedCase:
     extra_headers: dict[str, Any]
 
     @classmethod
-    def from_case(cls, case: Case, headers: dict[str, Any] | None, verify: bool) -> SerializedCase:
+    def from_case(
+        cls, case: Case, headers: dict[str, Any] | None, verify: bool
+    ) -> SerializedCase:
         # `headers` include not only explicitly provided headers but also ones added by hooks, custom auth, etc.
         request_data = case.prepare_code_sample_data(headers)
         serialized_body = _serialize_body(request_data.body)
@@ -105,6 +108,7 @@ class SerializedCheck:
     @classmethod
     def from_check(cls, check: Check) -> SerializedCheck:
         import requests
+
         from ..transports.responses import WSGIResponse
 
         if check.response is not None:
@@ -128,7 +132,9 @@ class SerializedCheck:
             name=check.name,
             value=check.value,
             example=SerializedCase.from_case(
-                check.example, headers, verify=response.verify if response is not None else True
+                check.example,
+                headers,
+                verify=response.verify if response is not None else True,
             ),
             message=check.message,
             request=request,
@@ -139,7 +145,11 @@ class SerializedCheck:
 
 
 def _get_headers(headers: dict[str, Any] | CaseInsensitiveDict) -> dict[str, str]:
-    return {key: value[0] for key, value in headers.items() if key not in get_excluded_headers()}
+    return {
+        key: value[0]
+        for key, value in headers.items()
+        if key not in get_excluded_headers()
+    }
 
 
 @dataclass
@@ -159,10 +169,13 @@ def get_serialized_history(case: Case) -> list[SerializedHistoryEntry]:
             history_response = Response.from_requests(case.source.response)
             verify = history_response.verify
         else:
-            history_response = Response.from_wsgi(case.source.response, case.source.elapsed)
+            history_response = Response.from_wsgi(
+                case.source.response, case.source.elapsed
+            )
             verify = True
         entry = SerializedHistoryEntry(
-            case=SerializedCase.from_case(case.source.case, headers, verify=verify), response=history_response
+            case=SerializedCase.from_case(case.source.case, headers, verify=verify),
+            response=history_response,
         )
         history.append(entry)
         case = case.source.case
@@ -200,8 +213,8 @@ class SerializedError:
 
     @classmethod
     def from_exception(cls, exception: Exception) -> SerializedError:
-        import requests
         import hypothesis.errors
+        import requests
         from hypothesis import HealthCheck
 
         title = "Runtime Error"
@@ -219,7 +232,9 @@ class SerializedError:
             type_ = RuntimeErrorType.HYPOTHESIS_DEADLINE_EXCEEDED
             message = str(exception).strip()
             extras = []
-        elif isinstance(exception, hypothesis.errors.InvalidArgument) and str(exception).startswith("Scalar "):
+        elif isinstance(exception, hypothesis.errors.InvalidArgument) and str(
+            exception
+        ).startswith("Scalar "):
             # Comes from `hypothesis-graphql`
             scalar_name = _scalar_name_from_error(exception)
             type_ = RuntimeErrorType.HYPOTHESIS_UNSUPPORTED_GRAPHQL_SCALAR
@@ -283,7 +298,13 @@ class SerializedError:
             type_ = RuntimeErrorType.UNCLASSIFIED
             message = str(exception)
             extras = []
-        return cls.with_exception(type_=type_, exception=exception, title=title, message=message, extras=extras)
+        return cls.with_exception(
+            type_=type_,
+            exception=exception,
+            title=title,
+            message=message,
+            extras=extras,
+        )
 
 
 HEALTH_CHECK_MESSAGE_DATA_TOO_LARGE = """There's a notable occurrence of examples surpassing the maximum size limit.
@@ -297,7 +318,9 @@ that the schema's constraints may be too complex.
 This level of filtration can slow down testing and affect the distribution
 of generated data. Review and simplify the schema constraints where
 possible to mitigate this issue."""
-HEALTH_CHECK_MESSAGE_TOO_SLOW = "Data generation is extremely slow. Consider reducing the complexity of the schema."
+HEALTH_CHECK_MESSAGE_TOO_SLOW = (
+    "Data generation is extremely slow. Consider reducing the complexity of the schema."
+)
 HEALTH_CHECK_MESSAGE_LARGE_BASE_EXAMPLE = """A health check has identified that the smallest example derived from the schema
 is excessively large, potentially leading to inefficient test execution.
 
@@ -308,10 +331,14 @@ Consider revising the schema to more accurately represent typical use cases
 or applying constraints to reduce the data size."""
 
 
-def _health_check_from_error(exception: hypothesis.errors.FailedHealthCheck) -> hypothesis.HealthCheck | None:
+def _health_check_from_error(
+    exception: hypothesis.errors.FailedHealthCheck,
+) -> hypothesis.HealthCheck | None:
     from hypothesis import HealthCheck
 
-    match = re.search(r"add HealthCheck\.(\w+) to the suppress_health_check ", str(exception))
+    match = re.search(
+        r"add HealthCheck\.(\w+) to the suppress_health_check ", str(exception)
+    )
     if match:
         return {
             "data_too_large": HealthCheck.data_too_large,
@@ -336,6 +363,7 @@ class SerializedInteraction:
     checks: list[SerializedCheck]
     status: Status
     recorded_at: str
+    case: Case
 
     @classmethod
     def from_interaction(cls, interaction: Interaction) -> SerializedInteraction:
@@ -345,6 +373,7 @@ class SerializedInteraction:
             checks=[SerializedCheck.from_check(check) for check in interaction.checks],
             status=interaction.status,
             recorded_at=interaction.recorded_at,
+            case=interaction.case,
         )
 
 
@@ -369,7 +398,9 @@ class SerializedTestResult:
 
     @classmethod
     def from_test_result(cls, result: TestResult) -> SerializedTestResult:
-        formatter = logging.Formatter("[%(asctime)s] %(levelname)s in %(module)s: %(message)s")
+        formatter = logging.Formatter(
+            "[%(asctime)s] %(levelname)s in %(module)s: %(message)s"
+        )
         return cls(
             method=result.method,
             path=result.path,
@@ -382,11 +413,16 @@ class SerializedTestResult:
             is_skipped=result.is_skipped,
             skip_reason=result.skip_reason,
             seed=result.seed,
-            data_generation_method=[m.as_short_name() for m in result.data_generation_method],
+            data_generation_method=[
+                m.as_short_name() for m in result.data_generation_method
+            ],
             checks=[SerializedCheck.from_check(check) for check in result.checks],
             logs=[formatter.format(record) for record in result.logs],
             errors=[SerializedError.from_exception(error) for error in result.errors],
-            interactions=[SerializedInteraction.from_interaction(interaction) for interaction in result.interactions],
+            interactions=[
+                SerializedInteraction.from_interaction(interaction)
+                for interaction in result.interactions
+            ],
         )
 
 
