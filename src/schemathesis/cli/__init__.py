@@ -15,8 +15,6 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable, NoReturn, 
 from urllib.parse import urlparse
 
 import click
-from hypothesis.strategies._internal.regex import set_regex_char, set_regex_text
-from hypothesis_jsonschema._from_schema import set_char, set_text
 
 from .. import checks as checks_module
 from .. import contrib, experimental
@@ -37,9 +35,7 @@ from ..constants import (
 )
 from ..exceptions import SchemaError, SchemaErrorType, extract_nth_traceback
 from ..fixups import ALL_FIXUPS
-from ..generation import (
-    AVAILABLE_LANGUAGES,
-    AVAILABLE_LANGUAGES_ST,
+from ..generation import (  # AVAILABLE_LANGUAGES,; AVAILABLE_LANGUAGES_ST,
     DEFAULT_DATA_GENERATION_METHODS,
     DataGenerationMethod,
 )
@@ -76,6 +72,10 @@ from .options import (
     OptionalInt,
 )
 from .sanitization import SanitizationHandler
+
+# from hypothesis.strategies._internal.regex import set_regex_char, set_regex_text
+# from hypothesis_jsonschema._from_schema import set_char, set_text
+
 
 if TYPE_CHECKING:
     import hypothesis
@@ -764,14 +764,14 @@ The report data, consisting of a tar gz file with multiple JSON files, is subjec
 )
 @with_hosts_file
 @click.option("--verbosity", "-v", help="Increase verbosity of the output.", count=True)
-@click.option(
-    "--language",
-    "-l",
-    help="Defines how Schemathesis generates what kind of languages.",
-    type=click.Choice(choices=AVAILABLE_LANGUAGES, case_sensitive=False),
-    default=AVAILABLE_LANGUAGES[0],
-    show_default=True,
-)
+# @click.option(
+#     "--language",
+#     "-l",
+#     help="Defines how Schemathesis generates what kind of languages.",
+#     type=click.Choice(choices=AVAILABLE_LANGUAGES, case_sensitive=False),
+#     default=AVAILABLE_LANGUAGES[0],
+#     show_default=True,
+# )
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -993,7 +993,7 @@ def run(
     if contrib_openapi_fill_missing_examples:
         contrib.openapi.fill_missing_examples.install()
 
-    prepare_language(lang=language)
+    # prepare_language(lang=language)
 
     hypothesis_settings = prepare_hypothesis_settings(
         database=hypothesis_database,
@@ -1069,14 +1069,14 @@ def run(
     )
 
 
-def prepare_language(lang: str):
-    """This is just temporary solution to modify the language hypothesis_jsonschema and hypothesis regex generates"""
-    # hypothesis_jsonschema
-    set_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
-    set_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
-    # hypothesis
-    set_regex_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
-    set_regex_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
+# def prepare_language(lang: str):
+#     """This is just temporary solution to modify the language hypothesis_jsonschema and hypothesis regex generates"""
+#     # hypothesis_jsonschema
+#     set_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
+#     set_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
+#     # hypothesis
+#     set_regex_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
+#     set_regex_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
 
 
 def prepare_request_cert(cert: str | None, key: str | None) -> RequestCert | None:
