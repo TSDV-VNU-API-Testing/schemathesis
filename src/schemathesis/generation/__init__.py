@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Union
 
-from hypothesis import strategies as st
-
 
 class DataGenerationMethod(str, Enum):
     """Defines what data Schemathesis generates for tests."""
@@ -71,21 +69,3 @@ class GenerationConfig:
     allow_x00: bool = True
     # Generate strings using the given codec
     codec: str | None = "utf-8"
-
-
-# ASCII_CHAR_ST = st.characters(
-#     blacklist_categories=("Cs",), min_codepoint=33, max_codepoint=126
-# )
-# ASCII_TEXT_ST = st.text(alphabet=ASCII_CHAR_ST, min_size=0)
-#
-# JP_CHAR_ST = st.characters(
-#     blacklist_categories=("Cs",),
-#     min_codepoint=ord("\u3040"),
-#     max_codepoint=ord("\u309F"),
-# )
-# JP_TEXT_ST = st.text(alphabet=JP_CHAR_ST, min_size=0)
-# AVAILABLE_LANGUAGES = ["en", "jp"]
-# AVAILABLE_LANGUAGES_ST = {
-#     "en": {"char": ASCII_CHAR_ST, "text": ASCII_TEXT_ST},
-#     "jp": {"char": JP_CHAR_ST, "text": JP_TEXT_ST},
-# }

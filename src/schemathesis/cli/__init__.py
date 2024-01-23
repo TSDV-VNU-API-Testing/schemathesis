@@ -35,10 +35,7 @@ from ..constants import (
 )
 from ..exceptions import SchemaError, SchemaErrorType, extract_nth_traceback
 from ..fixups import ALL_FIXUPS
-from ..generation import (  # AVAILABLE_LANGUAGES,; AVAILABLE_LANGUAGES_ST,
-    DEFAULT_DATA_GENERATION_METHODS,
-    DataGenerationMethod,
-)
+from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod
 from ..hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, HookScope
 from ..internal.datetime import current_datetime
 from ..internal.validation import file_exists
@@ -72,10 +69,6 @@ from .options import (
     OptionalInt,
 )
 from .sanitization import SanitizationHandler
-
-# from hypothesis.strategies._internal.regex import set_regex_char, set_regex_text
-# from hypothesis_jsonschema._from_schema import set_char, set_text
-
 
 if TYPE_CHECKING:
     import hypothesis
@@ -764,14 +757,6 @@ The report data, consisting of a tar gz file with multiple JSON files, is subjec
 )
 @with_hosts_file
 @click.option("--verbosity", "-v", help="Increase verbosity of the output.", count=True)
-# @click.option(
-#     "--language",
-#     "-l",
-#     help="Defines how Schemathesis generates what kind of languages.",
-#     type=click.Choice(choices=AVAILABLE_LANGUAGES, case_sensitive=False),
-#     default=AVAILABLE_LANGUAGES[0],
-#     show_default=True,
-# )
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -846,7 +831,6 @@ def run(
     schemathesis_io_telemetry: bool = True,
     hosts_file: PathLike = service.DEFAULT_HOSTS_PATH,
     force_color: bool = False,
-    language=AVAILABLE_LANGUAGES[0],
 ) -> None:
     """Run tests against an API using a specified SCHEMA.
 
@@ -993,8 +977,6 @@ def run(
     if contrib_openapi_fill_missing_examples:
         contrib.openapi.fill_missing_examples.install()
 
-    # prepare_language(lang=language)
-
     hypothesis_settings = prepare_hypothesis_settings(
         database=hypothesis_database,
         deadline=hypothesis_deadline,
@@ -1067,16 +1049,6 @@ def run(
         base_url=base_url,
         started_at=started_at,
     )
-
-
-# def prepare_language(lang: str):
-#     """This is just temporary solution to modify the language hypothesis_jsonschema and hypothesis regex generates"""
-#     # hypothesis_jsonschema
-#     set_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
-#     set_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
-#     # hypothesis
-#     set_regex_char(AVAILABLE_LANGUAGES_ST[lang]["char"])
-#     set_regex_text(AVAILABLE_LANGUAGES_ST[lang]["text"])
 
 
 def prepare_request_cert(cert: str | None, key: str | None) -> RequestCert | None:
