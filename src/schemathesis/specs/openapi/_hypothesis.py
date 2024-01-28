@@ -26,6 +26,7 @@ from ...serializers import Binary
 from ...transports.headers import has_invalid_characters, is_latin_1_encodable
 from ...types import NotSet
 from ...utils import compose, skip
+from ._vas import VAS_STRING_FORMATS
 from .constants import LOCATION_TO_CONTAINER
 from .formats import STRING_FORMATS
 from .negative import negative_schema
@@ -58,8 +59,9 @@ def get_default_format_strategies() -> dict[str, st.SearchStrategy]:
     )
 
     return {
-        "binary": st.binary().map(Binary),
-        "byte": st.binary().map(lambda x: b64encode(x).decode()),
+        # "binary": st.binary().map(Binary),
+        # "byte": st.binary().map(lambda x: b64encode(x).decode()),
+        **VAS_STRING_FORMATS,
         # RFC 7230, Section 3.2.6
         "_header_name": st.text(
             min_size=1,
@@ -218,9 +220,11 @@ def get_case_strategy(
         operation=operation,
         media_type=media_type,
         path_parameters=path_parameters_.value,
-        headers=CaseInsensitiveDict(headers_.value)
-        if headers_.value is not None
-        else headers_.value,
+        headers=(
+            CaseInsensitiveDict(headers_.value)
+            if headers_.value is not None
+            else headers_.value
+        ),
         cookies=cookies_.value,
         query=query_.value,
         body=body_.value,
