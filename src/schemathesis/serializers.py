@@ -79,6 +79,7 @@ class Serializer(Protocol):
     """
 
     def as_requests(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
+        print("deps/schemathesis/src/schemathesis/serializers.py: Serializing body")
         raise NotImplementedError
 
     def as_werkzeug(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
@@ -229,7 +230,7 @@ def _encode_multipart(value: Any, boundary: str) -> bytes:
     return body.getvalue()
 
 
-@register("multipart/form-data")
+@register("multipart/form-data") # type: ignore
 class MultipartSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         if isinstance(value, bytes):
@@ -249,7 +250,7 @@ class MultipartSerializer:
         return {"data": value}
 
 
-@register("application/x-www-form-urlencoded")
+@register("application/x-www-form-urlencoded") # type: ignore
 class URLEncodedFormSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return {"data": value}

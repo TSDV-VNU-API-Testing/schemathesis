@@ -101,7 +101,7 @@ SCHEMA_ERROR_MESSAGE = (
 SCHEMA_PARSING_ERRORS = (
     KeyError,
     AttributeError,
-    jsonschema.exceptions.RefResolutionError,
+    jsonschema.exceptions.RefResolutionError, # type: ignore
 )
 
 
@@ -292,9 +292,9 @@ class BaseOpenAPISchema(BaseSchema):
         method: str | None = None,
     ) -> NoReturn:
         __tracebackhide__ = True
-        if isinstance(error, jsonschema.exceptions.RefResolutionError):
+        if isinstance(error, jsonschema.exceptions.RefResolutionError): # type: ignore
             raise OperationSchemaError.from_reference_resolution_error(
-                error, path=path, method=method, full_path=full_path
+                error, path=path, method=method, full_path=full_path # type: ignore
             ) from None
         try:
             self.validate()
@@ -769,7 +769,7 @@ class BaseOpenAPISchema(BaseSchema):
             and isinstance(reference, str)
             and not reference.startswith("#/")
         ):
-            key = _make_reference_key(resolver._scopes_stack, reference)
+            key = _make_reference_key(resolver._scopes_stack, reference) # type: ignore
             with self._inline_reference_cache_lock:
                 if key not in self._inline_reference_cache:
                     with resolver.resolving(reference) as resolved:
@@ -902,6 +902,9 @@ class SwaggerV20(BaseOpenAPISchema):
                         *form_parameters, media_type=media_type
                     )
                 )
+
+        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> collect_param_v2")
+        print(collected)
         return collected
 
     def get_strategies_from_examples(
@@ -1079,10 +1082,27 @@ class OpenApi30(SwaggerV20):
         collected: list[OpenAPIParameter] = [
             OpenAPI30Parameter(definition=parameter) for parameter in parameters
         ]
+
+        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py:collect_params -> class OpenApi30")
+
         if "requestBody" in definition:
             required = definition["requestBody"].get("required", False)
             description = definition["requestBody"].get("description")
             for media_type, content in definition["requestBody"]["content"].items():
+                # Inject image data fields into request body
+                # content["schema"]["properties"]["avatar"]["properties"] = {
+                #     "name": {"title": "Image Name", "type": "string"},
+                #     "url": {"title": "Avatar URL", "type": "string"},
+                #     "size": {"title": "Image Size", "type": "integer"},
+                #     "format": {"title": "Image Format", "type": "string"}}
+
+                # content["schema"]["properties"]["image"]["properties"] = {
+                #     "name": {"title": "Image Name", "type": "string"},
+                #             "url": {"title": "Avatar URL", "type": "string"},
+                #             "size": {"title": "File Size", "type": "integer"},
+                #             "format": {"title": "Image Format", "type": "string"}}
+            
+                
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1091,6 +1111,8 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
+            print("Content in request body: ")
+            print(content)
         return collected
 
     def get_response_schema(
@@ -1099,6 +1121,7 @@ class OpenApi30(SwaggerV20):
         scopes, definition = self.resolver.resolve_in_scope(
             fast_deepcopy(definition), scope
         )
+        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py: get_response_schema -> ")
         options = iter(definition.get("content", {}).values())
         option = next(options, None)
         # "schema" is an optional key in the `MediaType` object
@@ -1142,6 +1165,7 @@ class OpenApi30(SwaggerV20):
         :return: `files` and `data` values for `requests.request`.
         """
         files = []
+        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> prepare_multipart")
         content = operation.definition.resolved["requestBody"]["content"]
         # Open API 3.0 requires media types to be present. We can get here only if the schema defines
         # the "multipart/form-data" media type
@@ -1152,9 +1176,24 @@ class OpenApi30(SwaggerV20):
                     files.extend([(name, item) for item in form_data[name]])
                 elif property_schema.get("format") in ("binary", "base64"):
                     files.append((name, form_data[name]))
+                # # Check if the property is the "avatar" field
+                # elif name == "avatar":
+                # # Assuming the original schema defines "avatar" as a string (binary data)
+                #     if property_schema.get("format") == "binary":
+                #         # Create a dictionary to hold both image data and additional info
+                #         avatar_data = {
+                #         "data": form_data[name],  # Existing image data
+                #         # Add your new data fields here (modify based on needs)
+                #         "filename": form_data.get("avatar_filename"),  # Example: filename
+                #         "size": len(form_data[name]),  # Example: size of binary data
+                #         # Add more fields as needed (e.g., format, caption)
+                #         }
+                #     files.append((name, avatar_data))  # Append the dictionary as avatar data
                 else:
                     files.append((name, (None, form_data[name])))
         # `None` is the default value for `files` and `data` arguments in `requests.request`
+
+        print(content) # type: ignore
         return files or None, None
 
     def _get_payload_schema(

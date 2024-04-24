@@ -320,7 +320,7 @@ def group_by_case(
 ) -> Generator[tuple[str, Generator[SerializedCheck, None, None]], None, None]:
     checks = deduplicate_failures(checks)
     checks = sorted(checks, key=lambda c: _by_unique_code_sample(c, code_sample_style))
-    yield from groupby(checks, lambda c: _by_unique_code_sample(c, code_sample_style))
+    yield from groupby(checks, lambda c: _by_unique_code_sample(c, code_sample_style)) # type: ignore
 
 
 def _by_unique_code_sample(check: SerializedCheck, code_sample_style: CodeSampleStyle) -> str:
@@ -439,7 +439,7 @@ def handle_service_integration(context: ServiceReportContext) -> None:
         service.Error: "red",
         service.Failed: "red",
         service.Timeout: "red",
-    }[event.__class__]
+    }[event.__class__] # type: ignore
     status = click.style(event.status, fg=color, bold=True)
     click.echo(f"{title}: {status}\r", nl=False)
     click.echo()
@@ -744,10 +744,13 @@ class DefaultOutputStyleHandler(EventHandler):
     def handle_event(self, context: ExecutionContext, event: events.ExecutionEvent) -> None:
         """Choose and execute a proper handler for the given event."""
         if isinstance(event, events.Initialized):
+            print("It's handled by initialized handler")
             handle_initialized(context, event)
         if isinstance(event, events.BeforeExecution):
+            print("It's handled by before_ex handler")
             handle_before_execution(context, event)
         if isinstance(event, events.AfterExecution):
+            print("It's handled by after_ex handler")
             context.hypothesis_output.extend(event.hypothesis_output)
             handle_after_execution(context, event)
         if isinstance(event, events.Finished):

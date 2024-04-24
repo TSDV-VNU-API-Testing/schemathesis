@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 @dataclass
 class SanitizationHandler(EventHandler):
     def handle_event(self, context: ExecutionContext, event: events.ExecutionEvent) -> None:
+        print("Goes through sanitization handler")
         if isinstance(event, events.AfterExecution):
             for check in event.result.checks:
                 sanitize_serialized_check(check)

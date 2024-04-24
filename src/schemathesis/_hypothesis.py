@@ -87,7 +87,7 @@ def setup_default_deadline(wrapped_test: Callable) -> None:
     existing_settings = _get_hypothesis_settings(wrapped_test)
     if (
         existing_settings is not None
-        and existing_settings.deadline == hypothesis.settings.default.deadline
+        and existing_settings.deadline == hypothesis.settings.default.deadline # type: ignore
     ):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", HypothesisWarning)
@@ -164,7 +164,7 @@ def add_single_example(strategy: st.SearchStrategy[Case], examples: list[Case]) 
         deadline=None,
         verbosity=hypothesis.Verbosity.quiet,
         phases=(hypothesis.Phase.generate,),
-        suppress_health_check=list(hypothesis.HealthCheck),
+        suppress_health_check=list(hypothesis.HealthCheck), # type: ignore
     )
     def example_generating_inner_function(ex: Case) -> None:
         examples.append(ex)

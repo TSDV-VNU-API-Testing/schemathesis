@@ -67,6 +67,7 @@ class CodeSampleStyle(str, Enum):
         extra_headers: Headers | None = None,
     ) -> str:
         """Generate a code snippet for making HTTP requests."""
+        print("deps/schemathesis/src/schemathesis/code_samples.py/generate: Generate body")
         handlers = {
             self.curl: _generate_curl,
             self.python: _generate_requests,

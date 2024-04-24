@@ -5,7 +5,7 @@ import pytest
 from hypothesis import HealthCheck, assume, find, given, settings
 from hypothesis import strategies as st
 
-import schemathesis
+# import schemathesis
 from schemathesis.models import Case
 from schemathesis.generation import DataGenerationMethod, GenerationConfig
 from schemathesis.exceptions import OperationSchemaError

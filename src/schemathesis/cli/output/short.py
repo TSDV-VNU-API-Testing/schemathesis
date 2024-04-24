@@ -7,11 +7,13 @@ from . import default
 
 
 def handle_before_execution(context: ExecutionContext, event: events.BeforeExecution) -> None:
+    print("It's handled by before_ex handler")
     if event.recursion_level > 0:
         context.operations_count += 1  # type: ignore
 
 
 def handle_after_execution(context: ExecutionContext, event: events.AfterExecution) -> None:
+    print("It's handled by after_ex handler")
     context.operations_processed += 1
     context.results.append(event.result)
     context.hypothesis_output.extend(event.hypothesis_output)

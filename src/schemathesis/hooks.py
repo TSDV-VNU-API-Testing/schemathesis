@@ -250,6 +250,7 @@ all_scopes = HookDispatcher.register_spec(list(HookScope))
 
 
 for action in ("filter", "map", "flatmap"):
+    print("Goes through hooks")
     for target in ("path_parameters", "query", "headers", "cookies", "body", "case"):
         exec(
             f"""
@@ -262,32 +263,32 @@ def {action}_{target}(context: HookContext, {target}: Any) -> Any:
 
 
 @all_scopes
-def before_generate_path_parameters(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:
+def before_generate_path_parameters(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
     """Called on a strategy that generates values for ``path_parameters``."""
 
 
 @all_scopes
-def before_generate_headers(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:
+def before_generate_headers(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
     """Called on a strategy that generates values for ``headers``."""
 
 
 @all_scopes
-def before_generate_cookies(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:
+def before_generate_cookies(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
     """Called on a strategy that generates values for ``cookies``."""
 
 
 @all_scopes
-def before_generate_query(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:
+def before_generate_query(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
     """Called on a strategy that generates values for ``query``."""
 
 
 @all_scopes
-def before_generate_body(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:
+def before_generate_body(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
     """Called on a strategy that generates values for ``body``."""
 
 
 @all_scopes
-def before_generate_case(context: HookContext, strategy: st.SearchStrategy[Case]) -> st.SearchStrategy[Case]:
+def before_generate_case(context: HookContext, strategy: st.SearchStrategy[Case]) -> st.SearchStrategy[Case]: # type: ignore
     """Called on a strategy that generates ``Case`` instances."""
 
 

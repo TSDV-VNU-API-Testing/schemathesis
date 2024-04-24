@@ -269,6 +269,9 @@ def _get_body_strategy(
         return _BODY_STRATEGIES_CACHE[parameter][strategy_factory]
     schema = parameter.as_json_schema(operation)
     schema = operation.schema.prepare_schema(schema)
+    new_schema = {**schema, }
+    print(">>>>>>>>>>>>>>>>>>> deps/schemathesis/src/schemathesis/specs/openapi/_hypothesis.py: ->")
+    print(new_schema)
     strategy = strategy_factory(
         schema, operation.verbose_name, "body", parameter.media_type, generation_config
     )
@@ -422,6 +425,7 @@ def get_parameters_strategy(
         ):
             return _PARAMETER_STRATEGIES_CACHE[operation][nested_cache_key]
         schema = parameters_to_json_schema(operation, parameters)
+        print(">>>>>>>>>>>>>>>>>>>>deps/schemathesis/src/schemathesis/specs/openapi/_hypothesis.py: ", schema["properties"])
         if not operation.schema.validate_schema and location == "path":
             # If schema validation is disabled, we try to generate data even if the parameter definition
             # contains errors.
@@ -466,6 +470,7 @@ def get_parameters_strategy(
         _PARAMETER_STRATEGIES_CACHE.setdefault(operation, {})[
             nested_cache_key
         ] = strategy
+        print(">>>>>>>>>>>>>>>>>>>>>>>>>>> strategy", strategy)
         return strategy
     # No parameters defined for this location
     return st.none()

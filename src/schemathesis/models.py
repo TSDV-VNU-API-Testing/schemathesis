@@ -117,6 +117,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     """Prepare request data for generating code samples."""
     import requests
 
+    print("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
     kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -135,6 +136,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
+    print("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -182,6 +184,7 @@ class Case:
 
     @deprecated_property(removed_in="4.0", replacement="operation")
     def endpoint(self) -> APIOperation:
+        print("API Operation: " + self.operation) # type: ignore
         return self.operation
 
     @property
@@ -363,12 +366,13 @@ class Case:
         session: requests.Session | None = None,
         headers: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | None = None,
+        cookies: dict[str, Any] | Non-e = None, # type: ignore
         **kwargs: Any,
     ) -> requests.Response:
         import requests
 
         """Make a network call with `requests`."""
+        print("deps/schemathesis/src/schemathesis/models.py/call function: Sending requests")
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
@@ -388,6 +392,7 @@ class Case:
         try:
             with self.operation.schema.ratelimit():
                 response = session.request(**data)  # type: ignore
+                print("deps/schemathesis/src/schemathesis/models.py/call function: Request was sent")
         except requests.Timeout as exc:
             timeout = (
                 1000 * data["timeout"]
@@ -401,6 +406,7 @@ class Case:
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
                 context=failures.RequestTimeout(message=message, timeout=timeout),
             ) from None
+        print("deps/schemathesis/src/schemathesis/models.py/call function: Response was received")
         response.verify = verify  # type: ignore[attr-defined]
         dispatch("after_call", hook_context, self, response)
         if close_session:

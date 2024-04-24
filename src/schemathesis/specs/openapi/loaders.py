@@ -159,8 +159,9 @@ def from_uri(
             return requests.get(_uri, **kwargs)
 
     else:
-        _load_schema = requests.get
+        _load_schema = requests.get # type: ignore
 
+    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_uri")
     response = load_schema_from_url(lambda: _load_schema(uri, **kwargs))
     return from_file(
         response.text,
@@ -238,13 +239,14 @@ def from_file(
         data = file
     if __expects_json:
         try:
-            raw = json.loads(data)
+            raw = json.loads(data) # type: ignore
+            # print(raw)
         except json.JSONDecodeError as exc:
             # Fallback to a slower YAML loader. This way we'll still load schemas from responses with
             # invalid `Content-Type` headers or YAML files that have the `.json` extension.
             # This is a rare case, and it will be slower but trying JSON first improves a more common use case
             try:
-                raw = _load_yaml(data)
+                raw = _load_yaml(data) # type: ignore
             except SchemaError:
                 raise SchemaError(
                     SchemaErrorType.SYNTAX_ERROR,
@@ -252,7 +254,9 @@ def from_file(
                     extras=[entry for entry in str(exc).splitlines() if entry],
                 ) from exc
     else:
-        raw = _load_yaml(data, include_details_on_error=__expects_yaml)
+        raw = _load_yaml(data, include_details_on_error=__expects_yaml) # type: ignore
+
+    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_file")
     return from_dict(
         raw,
         app=app,
@@ -342,6 +346,7 @@ def from_dict(
         return instance
 
     def init_openapi_3(forced: bool) -> OpenApi30:
+        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py: -> init_openapi_3")
         version = raw_schema["openapi"]
         if (
             not (is_openapi_31 and experimental.OPEN_API_3_1.is_enabled)
@@ -375,14 +380,20 @@ def from_dict(
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
+    
+    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_dict")
 
     if force_schema_version == "20":
+        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20")
         return init_openapi_2()
     if force_schema_version == "30":
+        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30")
         return init_openapi_3(forced=True)
     if "swagger" in raw_schema:
+        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20")
         return init_openapi_2()
     if "openapi" in raw_schema:
+        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30")
         return init_openapi_3(forced=False)
     raise SchemaError(
         SchemaErrorType.OPEN_API_UNSPECIFIED_VERSION,
@@ -417,7 +428,7 @@ def _format_status_codes(status_codes: list[tuple[int, list[str | int]]]) -> str
 
 
 def _maybe_validate_schema(
-    instance: dict[str, Any], validator: jsonschema.validators.Draft4Validator, validate_schema: bool
+    instance: dict[str, Any], validator: jsonschema.validators.Draft4Validator, validate_schema: bool # type: ignore
 ) -> None:
     from jsonschema import ValidationError
 
@@ -529,7 +540,7 @@ def from_wsgi(
     require_relative_url(schema_path)
     setup_default_headers(kwargs)
     client = Client(app, WSGIResponse)
-    response = load_schema_from_url(lambda: client.get(schema_path, **kwargs))
+    response = load_schema_from_url(lambda: client.get(schema_path, **kwargs)) # type: ignore
     return from_file(
         response.data,
         app=app,
