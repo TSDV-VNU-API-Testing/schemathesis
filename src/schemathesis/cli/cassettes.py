@@ -152,6 +152,7 @@ def worker(
 
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
+                print("deps/schemathesis/src/schemathesis/cli/cassettes.py: worker -> Request body: ", request.body)
                 output.write(
                     f"""
     body:
@@ -162,7 +163,8 @@ def worker(
         def format_response_body(output: IO, response: Response) -> None:
             if response.body is not None:
                 output.write(
-                    f"""    body:
+                    f"""    
+    body:
       encoding: '{response.encoding}'
       base64_string: '{response.body}'"""
                 )
@@ -172,6 +174,7 @@ def worker(
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
                 string = _safe_decode(request.body, "utf8")
+                print("deps/schemathesis/src/schemathesis/cli/cassettes.py: worker -> Request body: ", string)
                 output.write(
                     """
     body:

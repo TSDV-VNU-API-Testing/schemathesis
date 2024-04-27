@@ -57,7 +57,7 @@ from .parameters import Parameter, ParameterSet, PayloadAlternatives
 from .sanitization import sanitize_request, sanitize_response
 from .serializers import Serializer, SerializerContext
 from .transports import serialize_payload
-from .types import Body, Cookies, FormData, Headers, NotSet, PathParameters, Query
+from .types import Body, Cookies, FormData, Headers, MetaData, NotSet, PathParameters, Query
 
 if TYPE_CHECKING:
     import unittest
@@ -157,6 +157,8 @@ class Case:
     # The media type for cases with a payload. For example, "application/json"
     media_type: str | None = None
     source: CaseSource | None = None
+    # Meta-data for image data
+    meta_data: MetaData | NotSet = NOT_SET
 
     # The way the case was generated (None for manually crafted ones)
     data_generation_method: DataGenerationMethod | None = None
@@ -178,6 +180,8 @@ class Case:
                     parts.append(", ")
                 parts.extend((name, "=", repr(value)))
         return "".join(parts) + ")"
+
+    print(">>>>>>>>>>>>>>>>>Body of request: ", body)
 
     def __hash__(self) -> int:
         return hash(self.as_curl_command({SCHEMATHESIS_TEST_CASE_HEADER: "0"}))
@@ -332,6 +336,8 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
+        print("Centent-type: ", self.media_type)
+        print("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: ", self.body)
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
         if not base_url.endswith("/"):
@@ -366,7 +372,7 @@ class Case:
         session: requests.Session | None = None,
         headers: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | Non-e = None, # type: ignore
+        cookies: dict[str, Any] | None = None, # type: ignore
         **kwargs: Any,
     ) -> requests.Response:
         import requests

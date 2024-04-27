@@ -1094,15 +1094,29 @@ class OpenApi30(SwaggerV20):
                 #     "name": {"title": "Image Name", "type": "string"},
                 #     "url": {"title": "Avatar URL", "type": "string"},
                 #     "size": {"title": "Image Size", "type": "integer"},
-                #     "format": {"title": "Image Format", "type": "string"}}
-
-                # content["schema"]["properties"]["image"]["properties"] = {
-                #     "name": {"title": "Image Name", "type": "string"},
-                #             "url": {"title": "Avatar URL", "type": "string"},
-                #             "size": {"title": "File Size", "type": "integer"},
-                #             "format": {"title": "Image Format", "type": "string"}}
-            
+                #     "format": {"title": "Image Format", "type": "string"}}  
+                if "properties" in content["schema"]:
+                    for field_name, field_data in content["schema"]["properties"].items():
+                        if "format" in field_data and field_data["format"] == "binary":
+                            field_data["image"] = "true"
                 
+                # print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py, " , content.get("schema", {}).get("properties", {}).items())
+                # data = content.get("schema", {})
+                # # Loop through each property in the "properties" dictionary
+                # for field_name, field_data in data["properties"].items():
+                #     # Check if the current property has a "format" key
+                #     if "format" in field_data:
+                #         print(f"Property '{field_name}' has format: {field_data['format']}")
+
+                # print(">>>>>>>>>>>>>>>>>Body: " ,body["schema"])
+                # Check if 'format' is binary and inject a feature with a random value from 1 to 100
+                # if content.get('schema', {}).get('avatar', {}).get('format') == 'binary':
+                #     print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>Content has binary field")
+                    # feature_name = 'binary_data_feature'
+                    # random_value = random.randint(1, 100)
+                    # body.feature = {feature_name: random_value}
+                    # print(f"Injected feature '{feature_name}' with random value: {random_value}")
+
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1176,19 +1190,6 @@ class OpenApi30(SwaggerV20):
                     files.extend([(name, item) for item in form_data[name]])
                 elif property_schema.get("format") in ("binary", "base64"):
                     files.append((name, form_data[name]))
-                # # Check if the property is the "avatar" field
-                # elif name == "avatar":
-                # # Assuming the original schema defines "avatar" as a string (binary data)
-                #     if property_schema.get("format") == "binary":
-                #         # Create a dictionary to hold both image data and additional info
-                #         avatar_data = {
-                #         "data": form_data[name],  # Existing image data
-                #         # Add your new data fields here (modify based on needs)
-                #         "filename": form_data.get("avatar_filename"),  # Example: filename
-                #         "size": len(form_data[name]),  # Example: size of binary data
-                #         # Add more fields as needed (e.g., format, caption)
-                #         }
-                #     files.append((name, avatar_data))  # Append the dictionary as avatar data
                 else:
                     files.append((name, (None, form_data[name])))
         # `None` is the default value for `files` and `data` arguments in `requests.request`
