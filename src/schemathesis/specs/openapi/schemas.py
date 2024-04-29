@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -101,7 +102,7 @@ SCHEMA_ERROR_MESSAGE = (
 SCHEMA_PARSING_ERRORS = (
     KeyError,
     AttributeError,
-    jsonschema.exceptions.RefResolutionError, # type: ignore
+    jsonschema.exceptions.RefResolutionError,
 )
 
 
@@ -292,9 +293,9 @@ class BaseOpenAPISchema(BaseSchema):
         method: str | None = None,
     ) -> NoReturn:
         __tracebackhide__ = True
-        if isinstance(error, jsonschema.exceptions.RefResolutionError): # type: ignore
+        if isinstance(error, jsonschema.exceptions.RefResolutionError):
             raise OperationSchemaError.from_reference_resolution_error(
-                error, path=path, method=method, full_path=full_path # type: ignore
+                error, path=path, method=method, full_path=full_path
             ) from None
         try:
             self.validate()
@@ -769,7 +770,7 @@ class BaseOpenAPISchema(BaseSchema):
             and isinstance(reference, str)
             and not reference.startswith("#/")
         ):
-            key = _make_reference_key(resolver._scopes_stack, reference) # type: ignore
+            key = _make_reference_key(resolver._scopes_stack, reference)
             with self._inline_reference_cache_lock:
                 if key not in self._inline_reference_cache:
                     with resolver.resolving(reference) as resolved:
@@ -1089,20 +1090,14 @@ class OpenApi30(SwaggerV20):
             required = definition["requestBody"].get("required", False)
             description = definition["requestBody"].get("description")
             for media_type, content in definition["requestBody"]["content"].items():
-                # Inject image data fields into request body
-                # content["schema"]["properties"]["avatar"]["properties"] = {
-                #     "name": {"title": "Image Name", "type": "string"},
-                #     "url": {"title": "Avatar URL", "type": "string"},
-                #     "size": {"title": "Image Size", "type": "integer"},
-                #     "format": {"title": "Image Format", "type": "string"}}
-
-                # content["schema"]["properties"]["image"]["properties"] = {
-                #     "name": {"title": "Image Name", "type": "string"},
-                #             "url": {"title": "Avatar URL", "type": "string"},
-                #             "size": {"title": "File Size", "type": "integer"},
-                #             "format": {"title": "Image Format", "type": "string"}}
-            
-                
+                if 'properties' in content['schema']:
+                    for field, details in content['schema']['properties'].items():
+                        if 'format' in details and details['format'] == 'binary' and ('picture' in field.lower() or 'image' in field.lower() or 'avatar' in field.lower()):
+                            # Thêm một trường mới với một số ngẫu nhiên từ 0 đến 100
+                            # Chú ý thêm lệnh : import random
+                            details['random_number'] = random.randint(0, 10)
+                else:
+                    print(">>>>>>>>>>>>>>>>>>>>>>>>>>> NÓ KHÔNG NHẢY VÀO FORMAT == BINARY")
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1111,8 +1106,7 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
-            print("Content in request body: ")
-            print(content)
+            print(">>>>>>>>>>>>>>>>>>>>>>>> Content in request body: ", content)
         return collected
 
     def get_response_schema(
@@ -1176,24 +1170,9 @@ class OpenApi30(SwaggerV20):
                     files.extend([(name, item) for item in form_data[name]])
                 elif property_schema.get("format") in ("binary", "base64"):
                     files.append((name, form_data[name]))
-                # # Check if the property is the "avatar" field
-                # elif name == "avatar":
-                # # Assuming the original schema defines "avatar" as a string (binary data)
-                #     if property_schema.get("format") == "binary":
-                #         # Create a dictionary to hold both image data and additional info
-                #         avatar_data = {
-                #         "data": form_data[name],  # Existing image data
-                #         # Add your new data fields here (modify based on needs)
-                #         "filename": form_data.get("avatar_filename"),  # Example: filename
-                #         "size": len(form_data[name]),  # Example: size of binary data
-                #         # Add more fields as needed (e.g., format, caption)
-                #         }
-                #     files.append((name, avatar_data))  # Append the dictionary as avatar data
                 else:
                     files.append((name, (None, form_data[name])))
         # `None` is the default value for `files` and `data` arguments in `requests.request`
-
-        print(content) # type: ignore
         return files or None, None
 
     def _get_payload_schema(

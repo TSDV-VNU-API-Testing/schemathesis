@@ -117,7 +117,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     """Prepare request data for generating code samples."""
     import requests
 
-    print("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
+    #print("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
     kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -136,7 +136,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
-    print("Case class is called")
+    #print("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -184,7 +184,7 @@ class Case:
 
     @deprecated_property(removed_in="4.0", replacement="operation")
     def endpoint(self) -> APIOperation:
-        print("API Operation: " + self.operation) # type: ignore
+        #print("API Operation: " + self.operation) # type: ignore
         return self.operation
 
     @property
@@ -995,7 +995,6 @@ class Request:
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
         body = prepared.body
-
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
             body = body.encode("utf-8")

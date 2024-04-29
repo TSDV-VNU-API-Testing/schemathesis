@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import os
 import base64
 import json
 import re
@@ -147,11 +147,20 @@ def worker(
             f"    - name: '{check.name}'\n      status: '{check.value.name.upper()}'\n      message: {format_check_message(check.message)}"
             for check in checks
         )
-
+    def extract_filename(input_string):
+        lines = input_string.split('\n')
+        filename = ""
+        for i, line in enumerate(lines):
+            if 'filename' in line:
+                filename = lines[i + 2].strip()
+                break
+        return filename
+    
     if preserve_exact_body_bytes:
 
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
+                print("req.body: >>>>>>>>>>>>>>>>>>>>>>>>.", request.body)
                 output.write(
                     f"""
     body:
@@ -172,7 +181,24 @@ def worker(
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
                 string = _safe_decode(request.body, "utf8")
-                output.write(
+                metadata_img= {}
+                if('filename' in string):
+                    file_name = extract_filename(string)
+                    images_directory = '/home/thinh/vas/server/public/img'
+                    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.gif')
+                    image_paths = [os.path.join(images_directory, f) for f in os.listdir(images_directory) if f.lower().endswith(image_extensions)]
+                    for image_path in image_paths:
+                        if(file_name in image_path):
+                            file_size = os.path.getsize(image_path)
+                    output.write(
+                    f"""
+    body:
+      encoding: 'utf-8'
+      metadata: '{file_size}'
+      string: """
+                )
+                else:
+                    output.write(
                     """
     body:
       encoding: 'utf-8'
@@ -273,7 +299,7 @@ def write_double_quoted(stream: IO, text: str) -> None:
             )
         ):
             if start < end:
-                stream.write(text[start:end])
+                stream.write(text[start:end])       
                 start = end
             if ch is not None:
                 # Escape character

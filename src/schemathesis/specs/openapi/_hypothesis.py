@@ -269,9 +269,9 @@ def _get_body_strategy(
         return _BODY_STRATEGIES_CACHE[parameter][strategy_factory]
     schema = parameter.as_json_schema(operation)
     schema = operation.schema.prepare_schema(schema)
-    new_schema = {**schema, }
-    print(">>>>>>>>>>>>>>>>>>> deps/schemathesis/src/schemathesis/specs/openapi/_hypothesis.py: ->")
-    print(new_schema)
+    # new_schema = {**schema, }
+    # print(">>>>>>>>>>>>>>>>>>> deps/schemathesis/src/schemathesis/specs/openapi/_hypothesis.py -> _get_body_strategy: ->")
+    # print(new_schema)
     strategy = strategy_factory(
         schema, operation.verbose_name, "body", parameter.media_type, generation_config
     )
