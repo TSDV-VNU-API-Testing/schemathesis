@@ -102,7 +102,7 @@ SCHEMA_ERROR_MESSAGE = (
 SCHEMA_PARSING_ERRORS = (
     KeyError,
     AttributeError,
-    jsonschema.exceptions.RefResolutionError,
+    jsonschema.exceptions.RefResolutionError, # type: ignore
 )
 
 
@@ -293,9 +293,9 @@ class BaseOpenAPISchema(BaseSchema):
         method: str | None = None,
     ) -> NoReturn:
         __tracebackhide__ = True
-        if isinstance(error, jsonschema.exceptions.RefResolutionError):
+        if isinstance(error, jsonschema.exceptions.RefResolutionError): # type: ignore
             raise OperationSchemaError.from_reference_resolution_error(
-                error, path=path, method=method, full_path=full_path
+                error, path=path, method=method, full_path=full_path # type: ignore
             ) from None
         try:
             self.validate()
@@ -770,7 +770,7 @@ class BaseOpenAPISchema(BaseSchema):
             and isinstance(reference, str)
             and not reference.startswith("#/")
         ):
-            key = _make_reference_key(resolver._scopes_stack, reference)
+            key = _make_reference_key(resolver._scopes_stack, reference) # type: ignore
             with self._inline_reference_cache_lock:
                 if key not in self._inline_reference_cache:
                     with resolver.resolving(reference) as resolved:

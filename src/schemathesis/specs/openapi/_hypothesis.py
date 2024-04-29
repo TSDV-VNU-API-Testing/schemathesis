@@ -512,6 +512,7 @@ def make_positive_strategy(
         for sub_schema in schema.get("properties", {}).values():
             if list(sub_schema) == ["type"] and sub_schema["type"] == "string":
                 sub_schema.setdefault("format", HEADER_FORMAT)
+    print("deps/schemathesis/src/schemathesis/specs/openapi/_hypothesis.py: make_positive_strategy -> before go to hypothesis_jsonschema")
     return from_schema(
         schema,
         custom_formats={

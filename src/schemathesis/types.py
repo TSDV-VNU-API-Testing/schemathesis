@@ -14,6 +14,7 @@ PathParameters = Dict[str, Any]
 Headers = Dict[str, Any]
 Cookies = Dict[str, Any]
 FormData = Dict[str, Any]
+MetaData = Union[List, Dict[str, Any], str, int, float, bool, bytes]
 
 
 class NotSet:

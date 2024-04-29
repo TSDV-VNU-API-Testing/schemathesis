@@ -155,7 +155,7 @@ def worker(
                 filename = lines[i + 2].strip()
                 break
         return filename
-    
+
     if preserve_exact_body_bytes:
 
         def format_request_body(output: IO, request: Request) -> None:
@@ -286,7 +286,7 @@ def write_double_quoted(stream: IO, text: str) -> None:
             )
         ):
             if start < end:
-                stream.write(text[start:end])       
+                stream.write(text[start:end])
                 start = end
             if ch is not None:
                 # Escape character
