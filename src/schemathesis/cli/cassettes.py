@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os
+
 import base64
 import json
 import re
@@ -184,20 +184,7 @@ def worker(
                 metadata_img= {}
                 if('filename' in string):
                     file_name = extract_filename(string)
-                    images_directory = '/home/thinh/vas/server/public/img'
-                    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.gif')
-                    image_paths = [os.path.join(images_directory, f) for f in os.listdir(images_directory) if f.lower().endswith(image_extensions)]
-                    for image_path in image_paths:
-                        if(file_name in image_path):
-                            file_size = os.path.getsize(image_path)
-                    output.write(
-                    f"""
-    body:
-      encoding: 'utf-8'
-      metadata: '{file_size}'
-      string: """
-                )
-                else:
+                    print(">>>>>>>>>>>>>>> file_name", file_name)
                     output.write(
                     """
     body:
