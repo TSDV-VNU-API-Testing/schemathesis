@@ -156,8 +156,9 @@ def worker(
                 output.write(
                     f"""
     body:
-      encoding: 'utf-8'
-      base64_string: '{request.body}'"""
+        encoding: 'utf-8'
+        meta-data: '{request.body}'
+        base64_string: '{request.body}'"""
                 )
 
         def format_response_body(output: IO, response: Response) -> None:
@@ -178,8 +179,9 @@ def worker(
                 output.write(
                     """
     body:
-      encoding: 'utf-8'
-      string: """
+        encoding: 'utf-8'
+        meta-data: '{string}'
+        string: """
                 )
                 write_double_quoted(output, string)
 

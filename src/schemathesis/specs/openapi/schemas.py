@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from difflib import get_close_matches
 from hashlib import sha1
 from json import JSONDecodeError
+import os
+import random
 from threading import RLock
+import time
+from xxlimited import Str
+from PIL import Image
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -91,7 +96,10 @@ from .security import (
     SwaggerSecurityProcessor,
 )
 from .stateful import create_state_machine
-
+from hypothesis_jsonschema._from_schema import (
+    generate_random_image,
+    extract_image_name
+)
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse
 
@@ -1125,8 +1133,8 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
-            print("Content in request body: ")
-            print(content)
+            # print("Content in request body: ")
+            # print(content)
         return collected
 
     def get_response_schema(
@@ -1194,7 +1202,7 @@ class OpenApi30(SwaggerV20):
                     files.append((name, (None, form_data[name])))
         # `None` is the default value for `files` and `data` arguments in `requests.request`
 
-        print(content) # type: ignore
+        # print(content) # type: ignore
         return files or None, None
 
     def _get_payload_schema(

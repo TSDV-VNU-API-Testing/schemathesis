@@ -181,7 +181,7 @@ class Case:
                 parts.extend((name, "=", repr(value)))
         return "".join(parts) + ")"
 
-    print(">>>>>>>>>>>>>>>>>Body of request: ", body)
+    # print(">>>>>>>>>>>>>>>>>Body of request: ", body)
 
     def __hash__(self) -> int:
         return hash(self.as_curl_command({SCHEMATHESIS_TEST_CASE_HEADER: "0"}))
@@ -336,7 +336,7 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
-        print("Centent-type: ", self.media_type)
+        # print("Centent-type: ", self.media_type)
         print("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: ", self.body)
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
@@ -357,6 +357,7 @@ class Case:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
                 final_headers.setdefault(key, value)
+        # print("This is extra: ", extra)
         return {
             "method": self.method,
             "url": url,
