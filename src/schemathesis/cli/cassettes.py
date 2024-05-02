@@ -147,25 +147,31 @@ def worker(
             f"    - name: '{check.name}'\n      status: '{check.value.name.upper()}'\n      message: {format_check_message(check.message)}"
             for check in checks
         )
+    def extract_filename(input_string):
+        lines = input_string.split('\n')
+        filename = ""
+        for i, line in enumerate(lines):
+            if 'filename' in line:
+                filename = lines[i + 2].strip()
+                break
+        return filename
 
     if preserve_exact_body_bytes:
 
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
-                print("deps/schemathesis/src/schemathesis/cli/cassettes.py: worker -> Request body: ", request.body)
+                print("req.body: >>>>>>>>>>>>>>>>>>>>>>>>.", request.body)
                 output.write(
                     f"""
     body:
         encoding: 'utf-8'
-        meta-data: '{request.body}'
         base64_string: '{request.body}'"""
                 )
 
         def format_response_body(output: IO, response: Response) -> None:
             if response.body is not None:
                 output.write(
-                    f"""    
-    body:
+                    f"""    body:
       encoding: '{response.encoding}'
       base64_string: '{response.body}'"""
                 )
@@ -175,12 +181,15 @@ def worker(
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
                 string = _safe_decode(request.body, "utf8")
-                print("deps/schemathesis/src/schemathesis/cli/cassettes.py: worker -> Request body: ", string)
+                print("req.body: >>>>>>>>>>>>>>>>>>>>>>>>.", string)
+                metadata_img= {}
+                # if('filename' in string):
+                #     file_name = extract_filename(string)
+                #     print(">>>>>>>>>>>>>>> file_name", file_name)
                 output.write(
                     """
     body:
         encoding: 'utf-8'
-        meta-data: '{string}'
         string: """
                 )
                 write_double_quoted(output, string)
@@ -230,6 +239,7 @@ http_interactions:"""
                 format_request_body(stream, interaction.request)
                 stream.write(
                     f"""
+    meta-data: '{json.dumps(interaction.case.meta_data)}'
   response:
     status:
       code: '{interaction.response.status_code}'
@@ -383,6 +393,7 @@ def get_prepared_request(data: dict[str, Any]) -> requests.PreparedRequest:
     prepared._cookies = RequestsCookieJar()  # type: ignore
     if "body" in data:
         body = data["body"]
+        print("deps/schemathesis/src/schemathesis/cli/cassettes.py: get_prepared_body -> ", body)
         if "base64_string" in body:
             content = body["base64_string"]
             if content:

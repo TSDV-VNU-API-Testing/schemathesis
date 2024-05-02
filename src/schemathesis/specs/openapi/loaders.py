@@ -163,6 +163,7 @@ def from_uri(
 
     print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_uri")
     response = load_schema_from_url(lambda: _load_schema(uri, **kwargs))
+    #print(">>>>>>>>>>>vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py->from_uri-> variable: response: ", response.text)
     return from_file(
         response.text,
         app=app,
@@ -284,6 +285,7 @@ def _is_fast_api(app: Any) -> bool:
     return False
 
 
+
 def from_dict(
     raw_schema: dict[str, Any],
     *,
@@ -309,6 +311,8 @@ def from_dict(
     """
     from .schemas import OpenApi30, SwaggerV20
 
+    #print(">>>>>>>>>>>>>>>>>>> /vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py >>>> from_dict >>> raw_schema: ", raw_schema)
+    
     if not isinstance(raw_schema, dict):
         raise SchemaError(SchemaErrorType.OPEN_API_INVALID_SCHEMA, SCHEMA_INVALID_ERROR)
     _code_sample_style = CodeSampleStyle.from_str(code_sample_style)
@@ -344,7 +348,7 @@ def from_dict(
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
-
+    
     def init_openapi_3(forced: bool) -> OpenApi30:
         print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py: -> init_openapi_3")
         version = raw_schema["openapi"]
@@ -669,3 +673,7 @@ def from_asgi(
         sanitize_output=sanitize_output,
         __expects_json=_is_json_response(response),
     )
+
+
+
+

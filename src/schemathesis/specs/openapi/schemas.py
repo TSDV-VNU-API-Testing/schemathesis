@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -96,10 +97,6 @@ from .security import (
     SwaggerSecurityProcessor,
 )
 from .stateful import create_state_machine
-from hypothesis_jsonschema._from_schema import (
-    generate_random_image,
-    extract_image_name
-)
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse
 
@@ -1091,40 +1088,10 @@ class OpenApi30(SwaggerV20):
             OpenAPI30Parameter(definition=parameter) for parameter in parameters
         ]
 
-        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py:collect_params -> class OpenApi30")
-
         if "requestBody" in definition:
             required = definition["requestBody"].get("required", False)
             description = definition["requestBody"].get("description")
             for media_type, content in definition["requestBody"]["content"].items():
-                # Inject image data fields into request body
-                # content["schema"]["properties"]["avatar"]["properties"] = {
-                #     "name": {"title": "Image Name", "type": "string"},
-                #     "url": {"title": "Avatar URL", "type": "string"},
-                #     "size": {"title": "Image Size", "type": "integer"},
-                #     "format": {"title": "Image Format", "type": "string"}}  
-                if "properties" in content["schema"]:
-                    for field_name, field_data in content["schema"]["properties"].items():
-                        if "format" in field_data and field_data["format"] == "binary":
-                            field_data["image"] = "true"
-                
-                # print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py, " , content.get("schema", {}).get("properties", {}).items())
-                # data = content.get("schema", {})
-                # # Loop through each property in the "properties" dictionary
-                # for field_name, field_data in data["properties"].items():
-                #     # Check if the current property has a "format" key
-                #     if "format" in field_data:
-                #         print(f"Property '{field_name}' has format: {field_data['format']}")
-
-                # print(">>>>>>>>>>>>>>>>>Body: " ,body["schema"])
-                # Check if 'format' is binary and inject a feature with a random value from 1 to 100
-                # if content.get('schema', {}).get('avatar', {}).get('format') == 'binary':
-                #     print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>Content has binary field")
-                    # feature_name = 'binary_data_feature'
-                    # random_value = random.randint(1, 100)
-                    # body.feature = {feature_name: random_value}
-                    # print(f"Injected feature '{feature_name}' with random value: {random_value}")
-
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1133,8 +1100,6 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
-            # print("Content in request body: ")
-            # print(content)
         return collected
 
     def get_response_schema(
@@ -1201,8 +1166,6 @@ class OpenApi30(SwaggerV20):
                 else:
                     files.append((name, (None, form_data[name])))
         # `None` is the default value for `files` and `data` arguments in `requests.request`
-
-        # print(content) # type: ignore
         return files or None, None
 
     def _get_payload_schema(

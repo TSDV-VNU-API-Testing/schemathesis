@@ -117,7 +117,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     """Prepare request data for generating code samples."""
     import requests
 
-    print("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
+    #print("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
     kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -136,7 +136,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
-    print("Case class is called")
+    #print("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -188,7 +188,7 @@ class Case:
 
     @deprecated_property(removed_in="4.0", replacement="operation")
     def endpoint(self) -> APIOperation:
-        print("API Operation: " + self.operation) # type: ignore
+        #print("API Operation: " + self.operation) # type: ignore
         return self.operation
 
     @property
@@ -336,7 +336,6 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
-        # print("Centent-type: ", self.media_type)
         print("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: ", self.body)
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
@@ -345,9 +344,23 @@ class Case:
         url = unquote(urljoin(base_url, quote(formatted_path)))
         extra: dict[str, Any]
         serializer = self._get_serializer()
+
+        if isinstance(self.body, dict):
+            # Create a new body without meta-data
+            new_body: dict[str, Any] = {}
+            new_body = {key: value for key, value in self.body.items() if not key.startswith("vas_")}
+            self.meta_data = {key: value for key, value in self.body.items() if key.startswith("vas_")}
+            # print("New body -> ", new_body)
+            # print("Meta-data -> ", self.meta_data)
+            self.body = new_body
+
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
+            # if self.meta_data is not None:
+            #     extra['data'] = self.meta_data
+            print("deps/schemathesis/src/schemathesis/models.py: self.body -> ", self.body)
+            print("deps/schemathesis/src/schemathesis/models.py: context -> ", context)
         else:
             extra = {}
         if self._auth is not None:
@@ -357,7 +370,7 @@ class Case:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
                 final_headers.setdefault(key, value)
-        # print("This is extra: ", extra)
+        print("This is extra: ", extra)
         return {
             "method": self.method,
             "url": url,
@@ -365,6 +378,7 @@ class Case:
             "headers": final_headers,
             "params": self.query,
             **extra,
+            # "meta-data": self.meta_data
         }
 
     def call(
@@ -383,7 +397,9 @@ class Case:
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
+        print("deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: ", data)
         data.update(kwargs)
+        print("deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : ", data)
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
@@ -1002,10 +1018,10 @@ class Request:
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
         body = prepared.body
-
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
             body = body.encode("utf-8")
+        
 
         # these values have `str` type at this point
         uri = cast(str, prepared.url)
