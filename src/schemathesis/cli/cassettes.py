@@ -147,25 +147,16 @@ def worker(
             f"    - name: '{check.name}'\n      status: '{check.value.name.upper()}'\n      message: {format_check_message(check.message)}"
             for check in checks
         )
-    def extract_filename(input_string):
-        lines = input_string.split('\n')
-        filename = ""
-        for i, line in enumerate(lines):
-            if 'filename' in line:
-                filename = lines[i + 2].strip()
-                break
-        return filename
 
     if preserve_exact_body_bytes:
 
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
-                print("req.body: >>>>>>>>>>>>>>>>>>>>>>>>.", request.body)
                 output.write(
                     f"""
     body:
-        encoding: 'utf-8'
-        base64_string: '{request.body}'"""
+      encoding: 'utf-8'
+      base64_string: '{request.body}'"""
                 )
 
         def format_response_body(output: IO, response: Response) -> None:
@@ -181,16 +172,11 @@ def worker(
         def format_request_body(output: IO, request: Request) -> None:
             if request.body is not None:
                 string = _safe_decode(request.body, "utf8")
-                print("req.body: >>>>>>>>>>>>>>>>>>>>>>>>.", string)
-                metadata_img= {}
-                # if('filename' in string):
-                #     file_name = extract_filename(string)
-                #     print(">>>>>>>>>>>>>>> file_name", file_name)
                 output.write(
                     """
     body:
-        encoding: 'utf-8'
-        string: """
+      encoding: 'utf-8'
+      string: """
                 )
                 write_double_quoted(output, string)
 
@@ -199,7 +185,8 @@ def worker(
                 encoding = response.encoding or "utf8"
                 string = _safe_decode(response.body, encoding)
                 output.write(
-                    f"""    body:
+                    f"""    
+    body:
       encoding: '{encoding}'
       string: """
                 )
@@ -390,10 +377,9 @@ def get_prepared_request(data: dict[str, Any]) -> requests.PreparedRequest:
     prepared = requests.PreparedRequest()
     prepared.method = data["method"]
     prepared.url = data["uri"]
-    prepared._cookies = RequestsCookieJar()  # type: ignore
+    prepared._cookies = RequestsCookieJar()
     if "body" in data:
         body = data["body"]
-        print("deps/schemathesis/src/schemathesis/cli/cassettes.py: get_prepared_body -> ", body)
         if "base64_string" in body:
             content = body["base64_string"]
             if content:

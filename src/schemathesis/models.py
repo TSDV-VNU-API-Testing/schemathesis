@@ -357,8 +357,6 @@ class Case:
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
-            # if self.meta_data is not None:
-            #     extra['data'] = self.meta_data
             print("deps/schemathesis/src/schemathesis/models.py: self.body -> ", self.body)
             print("deps/schemathesis/src/schemathesis/models.py: context -> ", context)
         else:
@@ -765,7 +763,7 @@ class APIOperation(Generic[P, C]):
 
     def __post_init__(self) -> None:
         if self.verbose_name is None:
-            self.verbose_name = f"{self.method.upper()} {self.full_path}"  # type: ignore
+            self.verbose_name = f"{self.method.upper()} {self.full_path}" 
 
     @property
     def full_path(self) -> str:
