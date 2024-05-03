@@ -11,6 +11,7 @@ from json import JSONDecodeError
 import os
 import random
 from threading import RLock
+from server.src.utils.log import logger
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -905,8 +906,8 @@ class SwaggerV20(BaseOpenAPISchema):
                     )
                 )
 
-        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> collect_param_v2")
-        print(collected)
+        logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> collect_param_v2")
+        logger.debug(collected)
         return collected
 
     def get_strategies_from_examples(
@@ -1085,7 +1086,7 @@ class OpenApi30(SwaggerV20):
             OpenAPI30Parameter(definition=parameter) for parameter in parameters
         ]
 
-        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py:collect_params -> class OpenApi30")
+        logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py:collect_params -> class OpenApi30")
 
         if "requestBody" in definition:
             required = definition["requestBody"].get("required", False)
@@ -1098,7 +1099,7 @@ class OpenApi30(SwaggerV20):
                             # Chú ý thêm lệnh : import random
                             details['random_number'] = random.randint(0, 10)
                 else:
-                    print(">>>>>>>>>>>>>>>>>>>>>>>>>>> NÓ KHÔNG NHẢY VÀO FORMAT == BINARY")
+                    logger.debug(">>>>>>>>>>>>>>>>>>>>>>>>>>> NÓ KHÔNG NHẢY VÀO FORMAT == BINARY")
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1107,7 +1108,7 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
-            print(">>>>>>>>>>>>>>>>>>>>>>>> Content in request body: ", content)
+            logger.debug(">>>>>>>>>>>>>>>>>>>>>>>> Content in request body: ", content)
         return collected
 
     def get_response_schema(
@@ -1116,7 +1117,7 @@ class OpenApi30(SwaggerV20):
         scopes, definition = self.resolver.resolve_in_scope(
             fast_deepcopy(definition), scope
         )
-        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py: get_response_schema -> ")
+        logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py: get_response_schema -> ")
         options = iter(definition.get("content", {}).values())
         option = next(options, None)
         # "schema" is an optional key in the `MediaType` object
@@ -1160,7 +1161,7 @@ class OpenApi30(SwaggerV20):
         :return: `files` and `data` values for `requests.request`.
         """
         files = []
-        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> prepare_multipart")
+        logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py -> prepare_multipart")
         content = operation.definition.resolved["requestBody"]["content"]
         # Open API 3.0 requires media types to be present. We can get here only if the schema defines
         # the "multipart/form-data" media type
