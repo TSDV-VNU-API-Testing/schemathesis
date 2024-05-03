@@ -91,6 +91,6 @@ def get_file_strategy() -> st.SearchStrategy[bytes]:
 
 
 VAS_STRING_FORMATS = {
-    "binary": get_file_strategy().map(Binary),
+    # "binary": get_file_strategy().map(Binary),
     "byte": get_file_strategy().map(lambda x: b64encode(x).decode()),
 }

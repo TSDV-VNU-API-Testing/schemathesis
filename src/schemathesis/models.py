@@ -157,8 +157,8 @@ class Case:
     # The media type for cases with a payload. For example, "application/json"
     media_type: str | None = None
     source: CaseSource | None = None
-    # Meta-data for image data
-    meta_data: MetaData | NotSet = NOT_SET
+    # Meta-data for image data 
+    metadata: dict[str, Any] = field(default_factory=lambda: {})
 
     # The way the case was generated (None for manually crafted ones)
     data_generation_method: DataGenerationMethod | None = None
@@ -349,16 +349,14 @@ class Case:
             # Create a new body without meta-data
             new_body: dict[str, Any] = {}
             new_body = {key: value for key, value in self.body.items() if not key.startswith("vas_")}
-            self.meta_data = {key: value for key, value in self.body.items() if key.startswith("vas_")}
+            self.metadata = {key: value for key, value in self.body.items() if key.startswith("vas_")}
             # print("New body -> ", new_body)
-            # print("Meta-data -> ", self.meta_data)
+            # print("Meta-data -> ", self.metadata)
             self.body = new_body
 
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
-            print("deps/schemathesis/src/schemathesis/models.py: self.body -> ", self.body)
-            print("deps/schemathesis/src/schemathesis/models.py: context -> ", context)
         else:
             extra = {}
         if self._auth is not None:
@@ -376,7 +374,7 @@ class Case:
             "headers": final_headers,
             "params": self.query,
             **extra,
-            # "meta-data": self.meta_data
+            # "meta-data": self.metadata
         }
 
     def call(

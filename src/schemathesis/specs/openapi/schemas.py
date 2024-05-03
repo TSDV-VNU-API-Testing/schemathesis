@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import random
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -12,9 +11,6 @@ from json import JSONDecodeError
 import os
 import random
 from threading import RLock
-import time
-from xxlimited import Str
-from PIL import Image
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -97,6 +93,7 @@ from .security import (
     SwaggerSecurityProcessor,
 )
 from .stateful import create_state_machine
+
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse
 
@@ -1088,10 +1085,20 @@ class OpenApi30(SwaggerV20):
             OpenAPI30Parameter(definition=parameter) for parameter in parameters
         ]
 
+        print("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py:collect_params -> class OpenApi30")
+
         if "requestBody" in definition:
             required = definition["requestBody"].get("required", False)
             description = definition["requestBody"].get("description")
             for media_type, content in definition["requestBody"]["content"].items():
+                if 'properties' in content['schema']:
+                    for field, details in content['schema']['properties'].items():
+                        if 'format' in details and details['format'] == 'binary' and ('picture' in field.lower() or 'image' in field.lower() or 'avatar' in field.lower()):
+                            # Thêm một trường mới với một số ngẫu nhiên từ 0 đến 100
+                            # Chú ý thêm lệnh : import random
+                            details['random_number'] = random.randint(0, 10)
+                else:
+                    print(">>>>>>>>>>>>>>>>>>>>>>>>>>> NÓ KHÔNG NHẢY VÀO FORMAT == BINARY")
                 collected.append(
                     OpenAPI30Body(
                         content,
@@ -1100,6 +1107,7 @@ class OpenApi30(SwaggerV20):
                         required=required,
                     )
                 )
+            print(">>>>>>>>>>>>>>>>>>>>>>>> Content in request body: ", content)
         return collected
 
     def get_response_schema(

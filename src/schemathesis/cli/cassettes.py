@@ -226,7 +226,7 @@ http_interactions:"""
                 format_request_body(stream, interaction.request)
                 stream.write(
                     f"""
-    meta-data: '{json.dumps(interaction.case.meta_data)}'
+    metadata: '{json.dumps(interaction.case.metadata)}'
   response:
     status:
       code: '{interaction.response.status_code}'
