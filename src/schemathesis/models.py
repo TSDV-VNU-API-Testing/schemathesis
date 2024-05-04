@@ -58,7 +58,7 @@ from .sanitization import sanitize_request, sanitize_response
 from .serializers import Serializer, SerializerContext
 from .transports import serialize_payload
 from .types import Body, Cookies, FormData, Headers, NotSet, PathParameters, Query
-from server.src.utils.log import logger
+from .specs.openapi._vas import logger
 
 if TYPE_CHECKING:
     import unittest
@@ -118,7 +118,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     """Prepare request data for generating code samples."""
     import requests
 
-    #logger.debug("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
+    #logger.info("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
     kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -137,7 +137,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
-    #logger.debug("Case class is called")
+    #logger.info("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -334,7 +334,7 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: ", self.body)
+        logger.info("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: %s", self.body)
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
         if not base_url.endswith("/"):
@@ -362,7 +362,7 @@ class Case:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
                 final_headers.setdefault(key, value)
-        logger.debug("This is extra: ", extra)
+        logger.info("This is extra: %s", extra)
         return {
             "method": self.method,
             "url": url,
@@ -384,13 +384,13 @@ class Case:
         import requests
 
         """Make a network call with `requests`."""
-        logger.debug("deps/schemathesis/src/schemathesis/models.py/call function: Sending requests")
+        logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Sending requests")
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: ", data)
+        logger.info("deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s", data)
         data.update(kwargs)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : ", data)
+        logger.info("deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : %s", data)
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
@@ -406,7 +406,7 @@ class Case:
         try:
             with self.operation.schema.ratelimit():
                 response = session.request(**data)  
-                logger.debug("deps/schemathesis/src/schemathesis/models.py/call function: Request was sent")
+                logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Request was sent")
         except requests.Timeout as exc:
             timeout = (
                 1000 * data["timeout"]
@@ -420,7 +420,7 @@ class Case:
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
                 context=failures.RequestTimeout(message=message, timeout=timeout),
             ) from None
-        logger.debug("deps/schemathesis/src/schemathesis/models.py/call function: Response was received")
+        logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Response was received")
         response.verify = verify  
         dispatch("after_call", hook_context, self, response)
         if close_session:
