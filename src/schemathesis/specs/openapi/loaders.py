@@ -25,6 +25,7 @@ from ...transports.headers import setup_default_headers
 from ...internal.validation import require_relative_url
 from ...constants import NOT_SET
 from . import definitions, validation
+from ._vas import logger
 
 if TYPE_CHECKING:
     from .schemas import BaseOpenAPISchema
@@ -159,11 +160,11 @@ def from_uri(
             return requests.get(_uri, **kwargs)
 
     else:
-        _load_schema = requests.get # type: ignore
+        _load_schema = requests.get  # type: ignore
 
-    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_uri")
+    logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_uri")
     response = load_schema_from_url(lambda: _load_schema(uri, **kwargs))
-    #print(">>>>>>>>>>>vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py->from_uri-> variable: response: ", response.text)
+    # logger.debug(">>>>>>>>>>>vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py->from_uri-> variable: response: ", response.text)
     return from_file(
         response.text,
         app=app,
@@ -186,8 +187,12 @@ def from_uri(
     )
 
 
-SCHEMA_INVALID_ERROR = "The provided API schema does not appear to be a valid OpenAPI schema"
-SCHEMA_LOADING_ERROR = "Received unsupported content while expecting a JSON or YAML payload for Open API"
+SCHEMA_INVALID_ERROR = (
+    "The provided API schema does not appear to be a valid OpenAPI schema"
+)
+SCHEMA_LOADING_ERROR = (
+    "Received unsupported content while expecting a JSON or YAML payload for Open API"
+)
 SCHEMA_SYNTAX_ERROR = "API schema does not appear syntactically valid"
 
 
@@ -240,14 +245,14 @@ def from_file(
         data = file
     if __expects_json:
         try:
-            raw = json.loads(data) # type: ignore
-            # print(raw)
+            raw = json.loads(data)  # type: ignore
+            # logger.debug(raw)
         except json.JSONDecodeError as exc:
             # Fallback to a slower YAML loader. This way we'll still load schemas from responses with
             # invalid `Content-Type` headers or YAML files that have the `.json` extension.
             # This is a rare case, and it will be slower but trying JSON first improves a more common use case
             try:
-                raw = _load_yaml(data) # type: ignore
+                raw = _load_yaml(data)  # type: ignore
             except SchemaError:
                 raise SchemaError(
                     SchemaErrorType.SYNTAX_ERROR,
@@ -255,9 +260,11 @@ def from_file(
                     extras=[entry for entry in str(exc).splitlines() if entry],
                 ) from exc
     else:
-        raw = _load_yaml(data, include_details_on_error=__expects_yaml) # type: ignore
+        raw = _load_yaml(data, include_details_on_error=__expects_yaml)  # type: ignore
 
-    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_file")
+    logger.debug(
+        "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_file"
+    )
     return from_dict(
         raw,
         app=app,
@@ -285,7 +292,6 @@ def _is_fast_api(app: Any) -> bool:
     return False
 
 
-
 def from_dict(
     raw_schema: dict[str, Any],
     *,
@@ -311,8 +317,8 @@ def from_dict(
     """
     from .schemas import OpenApi30, SwaggerV20
 
-    #print(">>>>>>>>>>>>>>>>>>> /vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py >>>> from_dict >>> raw_schema: ", raw_schema)
-    
+    # logger.debug(">>>>>>>>>>>>>>>>>>> /vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py >>>> from_dict >>> raw_schema: ", raw_schema)
+
     if not isinstance(raw_schema, dict):
         raise SchemaError(SchemaErrorType.OPEN_API_INVALID_SCHEMA, SCHEMA_INVALID_ERROR)
     _code_sample_style = CodeSampleStyle.from_str(code_sample_style)
@@ -329,7 +335,9 @@ def from_dict(
         rate_limiter = build_limiter(rate_limit)
 
     def init_openapi_2() -> SwaggerV20:
-        _maybe_validate_schema(raw_schema, definitions.SWAGGER_20_VALIDATOR, validate_schema)
+        _maybe_validate_schema(
+            raw_schema, definitions.SWAGGER_20_VALIDATOR, validate_schema
+        )
         instance = SwaggerV20(
             raw_schema,
             app=app,
@@ -340,7 +348,9 @@ def from_dict(
             operation_id=operation_id,
             skip_deprecated_operations=skip_deprecated_operations,
             validate_schema=validate_schema,
-            data_generation_methods=DataGenerationMethod.ensure_list(data_generation_methods),
+            data_generation_methods=DataGenerationMethod.ensure_list(
+                data_generation_methods
+            ),
             code_sample_style=_code_sample_style,
             location=location,
             rate_limiter=rate_limiter,
@@ -348,9 +358,11 @@ def from_dict(
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
-    
+
     def init_openapi_3(forced: bool) -> OpenApi30:
-        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py: -> init_openapi_3")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py: -> init_openapi_3"
+        )
         version = raw_schema["openapi"]
         if (
             not (is_openapi_31 and experimental.OPEN_API_3_1.is_enabled)
@@ -376,7 +388,9 @@ def from_dict(
             operation_id=operation_id,
             skip_deprecated_operations=skip_deprecated_operations,
             validate_schema=validate_schema,
-            data_generation_methods=DataGenerationMethod.ensure_list(data_generation_methods),
+            data_generation_methods=DataGenerationMethod.ensure_list(
+                data_generation_methods
+            ),
             code_sample_style=_code_sample_style,
             location=location,
             rate_limiter=rate_limiter,
@@ -384,20 +398,30 @@ def from_dict(
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
-    
-    print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_dict")
+
+    logger.debug(
+        "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:from_dict"
+    )
 
     if force_schema_version == "20":
-        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20"
+        )
         return init_openapi_2()
     if force_schema_version == "30":
-        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30"
+        )
         return init_openapi_3(forced=True)
     if "swagger" in raw_schema:
-        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi20"
+        )
         return init_openapi_2()
     if "openapi" in raw_schema:
-        print("deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/specs/openapi/loaders.py:go to OpenApi30"
+        )
         return init_openapi_3(forced=False)
     raise SchemaError(
         SchemaErrorType.OPEN_API_UNSPECIFIED_VERSION,
@@ -432,7 +456,7 @@ def _format_status_codes(status_codes: list[tuple[int, list[str | int]]]) -> str
 
 
 def _maybe_validate_schema(
-    instance: dict[str, Any], validator: jsonschema.validators.Draft4Validator, validate_schema: bool # type: ignore
+    instance: dict[str, Any], validator: jsonschema.validators.Draft4Validator, validate_schema: bool  # type: ignore
 ) -> None:
     from jsonschema import ValidationError
 
@@ -445,10 +469,13 @@ def _maybe_validate_schema(
                 if status_codes:
                     message = _format_status_codes(status_codes)
                     raise SchemaError(
-                        SchemaErrorType.YAML_NUMERIC_STATUS_CODES, f"{NUMERIC_STATUS_CODES_MESSAGE}\n{message}"
+                        SchemaErrorType.YAML_NUMERIC_STATUS_CODES,
+                        f"{NUMERIC_STATUS_CODES_MESSAGE}\n{message}",
                     ) from exc
                 # Some other pattern error
-                raise SchemaError(SchemaErrorType.YAML_NON_STRING_KEYS, NON_STRING_OBJECT_KEY_MESSAGE) from exc
+                raise SchemaError(
+                    SchemaErrorType.YAML_NON_STRING_KEYS, NON_STRING_OBJECT_KEY_MESSAGE
+                ) from exc
             raise SchemaError(SchemaErrorType.UNCLASSIFIED, "Unknown error") from exc
         except ValidationError as exc:
             raise SchemaError(
@@ -489,8 +516,12 @@ def from_pytest_fixture(
     _code_sample_style = CodeSampleStyle.from_str(code_sample_style)
     _data_generation_methods: DataGenerationMethodInput | NotSet
     if data_generation_methods is not NOT_SET:
-        data_generation_methods = cast(DataGenerationMethodInput, data_generation_methods)
-        _data_generation_methods = DataGenerationMethod.ensure_list(data_generation_methods)
+        data_generation_methods = cast(
+            DataGenerationMethodInput, data_generation_methods
+        )
+        _data_generation_methods = DataGenerationMethod.ensure_list(
+            data_generation_methods
+        )
     else:
         _data_generation_methods = data_generation_methods
     rate_limiter: Limiter | None = None
@@ -544,7 +575,7 @@ def from_wsgi(
     require_relative_url(schema_path)
     setup_default_headers(kwargs)
     client = Client(app, WSGIResponse)
-    response = load_schema_from_url(lambda: client.get(schema_path, **kwargs)) # type: ignore
+    response = load_schema_from_url(lambda: client.get(schema_path, **kwargs))  # type: ignore
     return from_file(
         response.data,
         app=app,
@@ -673,7 +704,3 @@ def from_asgi(
         sanitize_output=sanitize_output,
         __expects_json=_is_json_response(response),
     )
-
-
-
-

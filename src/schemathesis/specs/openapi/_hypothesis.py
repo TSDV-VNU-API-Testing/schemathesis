@@ -33,6 +33,7 @@ from .negative import negative_schema
 from .negative.utils import can_negate
 from .parameters import OpenAPIBody, parameters_to_json_schema
 from .utils import is_header_location
+from ._vas import logger
 
 HEADER_FORMAT = "_header_value"
 PARAMETERS = frozenset(("path_parameters", "headers", "cookies", "query", "body"))
@@ -60,8 +61,8 @@ def get_default_format_strategies() -> dict[str, st.SearchStrategy]:
 
     return {
         # "binary": st.binary().map(Binary),
-        # "byte": st.binary().map(lambda x: b64encode(x).decode()),
-        **VAS_STRING_FORMATS,
+        "byte": st.binary().map(lambda x: b64encode(x).decode()),
+        # **VAS_STRING_FORMATS,
         # RFC 7230, Section 3.2.6
         "_header_name": st.text(
             min_size=1,
@@ -232,8 +233,8 @@ def get_case_strategy(
         prev_stateful_case=prev_stateful_case,
     )
 
-    print("\nCase Id: " + str(instance.case_id))
-    print(
+    logger.debug("\nCase Id: " + str(instance.case_id))
+    logger.debug(
         "Prev case id: "
         + (
             str(prev_stateful_case.case_id)
@@ -241,7 +242,7 @@ def get_case_strategy(
             else "None"
         )
     )
-    print("-------------")
+    logger.debug("-------------")
 
     auth_context = auths.AuthContext(
         operation=operation,

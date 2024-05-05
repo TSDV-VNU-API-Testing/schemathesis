@@ -23,6 +23,8 @@ from .transports.content_types import (
     is_xml_media_type,
     parse_content_type,
 )
+from .specs.openapi._vas import logger
+
 
 if TYPE_CHECKING:
     from .models import Case
@@ -79,14 +81,18 @@ class Serializer(Protocol):
     """
 
     def as_requests(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
-        print("deps/schemathesis/src/schemathesis/serializers.py: Serializing body")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/serializers.py: Serializing body"
+        )
         raise NotImplementedError
 
     def as_werkzeug(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
         raise NotImplementedError
 
 
-def register(media_type: str, *, aliases: Collection[str] = ()) -> Callable[[type[Serializer]], type[Serializer]]:
+def register(
+    media_type: str, *, aliases: Collection[str] = ()
+) -> Callable[[type[Serializer]], type[Serializer]]:
     """Register a serializer for the given media type.
 
     Schemathesis uses ``requests`` for regular network calls and ``werkzeug`` for WSGI applications. Your serializer
@@ -174,10 +180,18 @@ class YAMLSerializer:
 @register("application/xml")
 class XMLSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
-        return _to_xml(value, context.get_raw_payload_schema(), context.get_resolved_payload_schema())
+        return _to_xml(
+            value,
+            context.get_raw_payload_schema(),
+            context.get_resolved_payload_schema(),
+        )
 
     def as_werkzeug(self, context: SerializerContext, value: Any) -> dict[str, Any]:
-        return _to_xml(value, context.get_raw_payload_schema(), context.get_resolved_payload_schema())
+        return _to_xml(
+            value,
+            context.get_raw_payload_schema(),
+            context.get_resolved_payload_schema(),
+        )
 
 
 def _should_coerce_to_bytes(item: Any) -> bool:
@@ -196,7 +210,10 @@ def _prepare_form_data(data: dict[str, Any]) -> dict[str, Any]:
     """
     for name, value in data.items():
         if isinstance(value, list):
-            data[name] = [_to_bytes(item) if _should_coerce_to_bytes(item) else item for item in value]
+            data[name] = [
+                _to_bytes(item) if _should_coerce_to_bytes(item) else item
+                for item in value
+            ]
         elif _should_coerce_to_bytes(value):
             data[name] = _to_bytes(value)
     return data
@@ -230,7 +247,7 @@ def _encode_multipart(value: Any, boundary: str) -> bytes:
     return body.getvalue()
 
 
-@register("multipart/form-data") # type: ignore
+@register("multipart/form-data")  # type: ignore
 class MultipartSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         if isinstance(value, bytes):
@@ -250,7 +267,7 @@ class MultipartSerializer:
         return {"data": value}
 
 
-@register("application/x-www-form-urlencoded") # type: ignore
+@register("application/x-www-form-urlencoded")  # type: ignore
 class URLEncodedFormSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return {"data": value}

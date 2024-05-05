@@ -1,11 +1,10 @@
-import random
 import logging
-from base64 import b64encode
+import random
+import sys
 from functools import partial
 
 from faker import Faker
 from faker_file.providers.bin_file import BinFileProvider
-from faker_file.providers.bmp_file import BmpFileProvider
 from faker_file.providers.csv_file import CsvFileProvider
 from faker_file.providers.docx_file import DocxFileProvider
 from faker_file.providers.eml_file import EmlFileProvider
@@ -23,14 +22,11 @@ from faker_file.providers.pptx_file import PptxFileProvider
 from faker_file.providers.rtf_file import RtfFileProvider
 from faker_file.providers.svg_file import SvgFileProvider
 from faker_file.providers.tar_file import TarFileProvider
-from faker_file.providers.tiff_file import TiffFileProvider
 from faker_file.providers.txt_file import TxtFileProvider
 from faker_file.providers.webp_file import GraphicWebpFileProvider, WebpFileProvider
 from faker_file.providers.xlsx_file import XlsxFileProvider
 from faker_file.providers.zip_file import ZipFileProvider
 from hypothesis import strategies as st
-
-from ...serializers import Binary
 
 FAKER = Faker()
 
@@ -91,9 +87,11 @@ def get_file_strategy() -> st.SearchStrategy[bytes]:
     return st.builds(get_random_file_bytes, st.integers())
 
 
+VAS_KEY_PREFIX = "ZTc3N2RlYmUtMWJmMC00NjNjLTkzYjYtOWNmN2IxOGQ0ODkzCg=="
+
 VAS_STRING_FORMATS = {
     # "binary": get_file_strategy().map(Binary),
-    "byte": get_file_strategy().map(lambda x: b64encode(x).decode()),
+    # "byte": get_file_strategy().map(lambda x: b64encode(x).decode()),
 }
 
 CURRENT_LEVEL = logging.DEBUG
@@ -106,19 +104,17 @@ logging.basicConfig(
     level=CURRENT_LEVEL,
     format=CURRENT_FORMAT,
     datefmt=CURRENT_DATE_FORMAT,
+    stream=sys.stdout,
     # filename=get_abs_path("public/log/run.log"),
 )
-
 logger = logging.getLogger(name="Logger")
 logger.setLevel(level=CURRENT_LEVEL)
 
-for handler in logger.handlers:
-    logger.removeHandler(handler)
+# for handler in logger.handlers:
+#     logger.removeHandler(handler)
+# console_handle = logging.StreamHandler(sys.stdout)
+# console_handle.setLevel(level=CURRENT_LEVEL)
+# formatter = logging.Formatter(CURRENT_FORMAT)
+# console_handle.setFormatter(formatter)
 
-console_handle = logging.StreamHandler()
-console_handle.setLevel(level=CURRENT_LEVEL)
-
-formatter = logging.Formatter(CURRENT_FORMAT)
-console_handle.setFormatter(formatter)
-
-logger.addHandler(console_handle)
+# logger.addHandler(console_handle)

@@ -69,6 +69,7 @@ from .options import (
     OptionalInt,
 )
 from .sanitization import SanitizationHandler
+from ..specs.openapi._vas import logger
 
 if TYPE_CHECKING:
     import hypothesis
@@ -1152,7 +1153,7 @@ def into_event_stream(
             tag=tag or None,
             operation_id=operation_id or None,
         )
-        print("deps/schemathesis/src/schemathesis/cli/__init__.py: Goes through into_stream_event")
+        logger.debug("deps/schemathesis/src/schemathesis/cli/__init__.py: Goes through into_stream_event")
         loaded_schema = load_schema(config)
         yield from runner.from_schema(
             loaded_schema,
@@ -1189,7 +1190,7 @@ def load_schema(config: LoaderConfig) -> BaseSchema:
     """Automatically load API schema."""
     first: Callable[[LoaderConfig], BaseSchema]
     second: Callable[[LoaderConfig], BaseSchema]
-    print("deps/schemathesis/src/schemathesis/cli/__init__.py: -> load_schema")
+    logger.debug("deps/schemathesis/src/schemathesis/cli/__init__.py: -> load_schema")
     if is_probably_graphql(config.schema_or_location):
         # Try GraphQL first, then fallback to Open API
         first, second = (_load_graphql_schema, _load_openapi_schema)
@@ -1253,7 +1254,7 @@ def detect_loader(
     schema_or_location: str | dict[str, Any], app: Any, is_openapi: bool
 ) -> Callable:
     """Detect API schema loader."""
-    print("deps/schemathesis/src/schemathesis/cli/__init__.py: -> detect_loader")
+    logger.debug("deps/schemathesis/src/schemathesis/cli/__init__.py: -> detect_loader")
     if isinstance(schema_or_location, str):
         if file_exists(schema_or_location):
             # If there is an existing file with the given name,
@@ -1474,7 +1475,7 @@ def execute(
     if debug_output_file is not None:
         handlers.append(DebugOutputHandler(debug_output_file))
     if cassette_path is not None:
-        print("deps/schemathesis/src/schemathesis/cli/__init__.py: class Execute -> Casset is called")
+        logger.debug("deps/schemathesis/src/schemathesis/cli/__init__.py: class Execute -> Casset is called")
         # This handler should be first to have logs writing completed when the output handler will display statistic
         handlers.append(
             cassettes.CassetteWriter(
@@ -1511,7 +1512,7 @@ def execute(
         for event in event_stream:
             for handler in handlers:
                 try:
-                    print("deps/schemathesis/src/schemathesis/cli/__init__.py/execute")
+                    logger.debug("deps/schemathesis/src/schemathesis/cli/__init__.py/execute")
                     handler.handle_event(execution_context, event)
                 except Exception as exc:
                     # `Abort` is used for handled errors

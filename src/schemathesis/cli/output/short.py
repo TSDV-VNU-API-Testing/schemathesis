@@ -4,16 +4,21 @@ from ...runner import events
 from ..context import ExecutionContext
 from ..handlers import EventHandler
 from . import default
+from ...specs.openapi._vas import logger
 
 
-def handle_before_execution(context: ExecutionContext, event: events.BeforeExecution) -> None:
-    print("It's handled by before_ex handler")
+def handle_before_execution(
+    context: ExecutionContext, event: events.BeforeExecution
+) -> None:
+    logger.debug("It's handled by before_ex handler")
     if event.recursion_level > 0:
         context.operations_count += 1  # type: ignore
 
 
-def handle_after_execution(context: ExecutionContext, event: events.AfterExecution) -> None:
-    print("It's handled by after_ex handler")
+def handle_after_execution(
+    context: ExecutionContext, event: events.AfterExecution
+) -> None:
+    logger.debug("It's handled by after_ex handler")
     context.operations_processed += 1
     context.results.append(event.result)
     context.hypothesis_output.extend(event.hypothesis_output)
@@ -21,7 +26,9 @@ def handle_after_execution(context: ExecutionContext, event: events.AfterExecuti
 
 
 class ShortOutputStyleHandler(EventHandler):
-    def handle_event(self, context: ExecutionContext, event: events.ExecutionEvent) -> None:
+    def handle_event(
+        self, context: ExecutionContext, event: events.ExecutionEvent
+    ) -> None:
         """Short output style shows single symbols in the progress bar.
 
         Otherwise, identical to the default output style.

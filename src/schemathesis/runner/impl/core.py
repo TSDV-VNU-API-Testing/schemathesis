@@ -60,7 +60,7 @@ from ...types import RawAuth, RequestCert
 from ...utils import capture_hypothesis_output
 from ..override import CaseOverride
 from ..serialization import SerializedTestResult
-
+from ...specs.openapi._vas import logger
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse, WSGIResponse
 
@@ -805,7 +805,7 @@ def _network_test(
         raise
     finally:
         # if feedback.stateful == Stateful.links:
-        # print("stateful")
+        # logger.debug("stateful")
         # do something
 
         feedback.add_test_case(case, response)

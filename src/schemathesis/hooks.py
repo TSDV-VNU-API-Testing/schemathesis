@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .models import APIOperation, Case
     from .schemas import BaseSchema
     from .transports.responses import GenericResponse
+from .specs.openapi._vas import logger
 
 
 @unique
@@ -53,7 +54,9 @@ class HookDispatcher:
     """
 
     scope: HookScope
-    _hooks: DefaultDict[str, list[Callable]] = field(default_factory=lambda: defaultdict(list))
+    _hooks: DefaultDict[str, list[Callable]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
     _specs: ClassVar[dict[str, RegisteredHook]] = {}
 
     def register(self, hook: str | Callable) -> Callable:
@@ -99,7 +102,9 @@ class HookDispatcher:
         instance._hooks = all_hooks
         return instance
 
-    def apply(self, hook: Callable, *, name: str | None = None) -> Callable[[Callable], Callable]:
+    def apply(
+        self, hook: Callable, *, name: str | None = None
+    ) -> Callable[[Callable], Callable]:
         """Register hook to run only on one test function.
 
         :param hook: A hook function.
@@ -202,7 +207,9 @@ class HookDispatcher:
             strategy = strategy.flatmap(hook)
         return strategy
 
-    def dispatch(self, name: str, context: HookContext, *args: Any, **kwargs: Any) -> None:
+    def dispatch(
+        self, name: str, context: HookContext, *args: Any, **kwargs: Any
+    ) -> None:
         """Run all hooks for the given name."""
         for hook in self.get_all_by_name(name):
             hook(context, *args, **kwargs)
@@ -250,7 +257,7 @@ all_scopes = HookDispatcher.register_spec(list(HookScope))
 
 
 for action in ("filter", "map", "flatmap"):
-    print("Goes through hooks")
+    logger.debug("Goes through hooks")
     for target in ("path_parameters", "query", "headers", "cookies", "body", "case"):
         exec(
             f"""
@@ -263,37 +270,39 @@ def {action}_{target}(context: HookContext, {target}: Any) -> Any:
 
 
 @all_scopes
-def before_generate_path_parameters(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
+def before_generate_path_parameters(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:  # type: ignore
     """Called on a strategy that generates values for ``path_parameters``."""
 
 
 @all_scopes
-def before_generate_headers(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
+def before_generate_headers(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:  # type: ignore
     """Called on a strategy that generates values for ``headers``."""
 
 
 @all_scopes
-def before_generate_cookies(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
+def before_generate_cookies(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:  # type: ignore
     """Called on a strategy that generates values for ``cookies``."""
 
 
 @all_scopes
-def before_generate_query(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
+def before_generate_query(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:  # type: ignore
     """Called on a strategy that generates values for ``query``."""
 
 
 @all_scopes
-def before_generate_body(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy: # type: ignore
+def before_generate_body(context: HookContext, strategy: st.SearchStrategy) -> st.SearchStrategy:  # type: ignore
     """Called on a strategy that generates values for ``body``."""
 
 
 @all_scopes
-def before_generate_case(context: HookContext, strategy: st.SearchStrategy[Case]) -> st.SearchStrategy[Case]: # type: ignore
+def before_generate_case(context: HookContext, strategy: st.SearchStrategy[Case]) -> st.SearchStrategy[Case]:  # type: ignore
     """Called on a strategy that generates ``Case`` instances."""
 
 
 @all_scopes
-def before_process_path(context: HookContext, path: str, methods: dict[str, Any]) -> None:
+def before_process_path(
+    context: HookContext, path: str, methods: dict[str, Any]
+) -> None:
     """Called before API path is processed."""
 
 
@@ -326,7 +335,9 @@ def before_init_operation(context: HookContext, operation: APIOperation) -> None
 
 
 @HookDispatcher.register_spec([HookScope.GLOBAL])
-def add_case(context: HookContext, case: Case, response: GenericResponse) -> Case | None:
+def add_case(
+    context: HookContext, case: Case, response: GenericResponse
+) -> Case | None:
     """Creates an additional test per API operation. If this hook returns None, no additional test created.
 
     Called with a copy of the original case object and the server's response to the original case.

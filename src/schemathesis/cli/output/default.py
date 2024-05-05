@@ -29,9 +29,15 @@ from ...experimental import GLOBAL_EXPERIMENTS
 from ...models import Status
 from ...runner import events
 from ...runner.events import InternalErrorType, SchemaErrorType
-from ...runner.serialization import SerializedError, SerializedTestResult, deduplicate_failures, SerializedCheck
+from ...runner.serialization import (
+    SerializedError,
+    SerializedTestResult,
+    deduplicate_failures,
+    SerializedCheck,
+)
 from ..context import ExecutionContext, FileReportContext, ServiceReportContext
 from ..handlers import EventHandler
+from ...specs.openapi._vas import logger
 
 SPINNER_REPETITION_NUMBER = 10
 
@@ -58,7 +64,9 @@ def get_percentage(position: int, length: int) -> str:
     return f"[{percentage_message}]"
 
 
-def display_execution_result(context: ExecutionContext, event: events.AfterExecution) -> None:
+def display_execution_result(
+    context: ExecutionContext, event: events.AfterExecution
+) -> None:
     """Display an appropriate symbol for the given event's execution result."""
     symbol, color = {
         Status.success: (".", "green"),
@@ -72,12 +80,20 @@ def display_execution_result(context: ExecutionContext, event: events.AfterExecu
 
 def display_percentage(context: ExecutionContext, event: events.AfterExecution) -> None:
     """Add the current progress in % to the right side of the current line."""
-    operations_count = cast(int, context.operations_count)  # is already initialized via `Initialized` event
+    operations_count = cast(
+        int, context.operations_count
+    )  # is already initialized via `Initialized` event
     current_percentage = get_percentage(context.operations_processed, operations_count)
     styled = click.style(current_percentage, fg="cyan")
     # Total length of the message, so it will fill to the right border of the terminal.
     # Padding is already taken into account in `context.current_line_length`
-    length = max(get_terminal_width() - context.current_line_length + len(styled) - len(current_percentage), 1)
+    length = max(
+        get_terminal_width()
+        - context.current_line_length
+        + len(styled)
+        - len(current_percentage),
+        1,
+    )
     template = f"{{:>{length}}}"
     click.echo(template.format(styled))
 
@@ -158,7 +174,9 @@ def display_errors(context: ExecutionContext, event: events.Finished) -> None:
     )
 
 
-def display_single_error(context: ExecutionContext, result: SerializedTestResult) -> bool:
+def display_single_error(
+    context: ExecutionContext, result: SerializedTestResult
+) -> bool:
     display_subsection(result)
     should_display_full_traceback_message = False
     for error in result.errors:
@@ -166,7 +184,9 @@ def display_single_error(context: ExecutionContext, result: SerializedTestResult
     return should_display_full_traceback_message
 
 
-def display_generic_errors(context: ExecutionContext, errors: list[SerializedError]) -> None:
+def display_generic_errors(
+    context: ExecutionContext, errors: list[SerializedError]
+) -> None:
     for error in errors:
         display_section_name(error.title or "Generic error", "_", fg="red")
         _display_error(context, error)
@@ -190,10 +210,10 @@ def bold(option: str) -> str:
     return click.style(option, bold=True)
 
 
-DISABLE_SSL_SUGGESTION = f"Bypass SSL verification with {bold('`--request-tls-verify=false`')}."
-DISABLE_SCHEMA_VALIDATION_SUGGESTION = (
-    f"Bypass validation using {bold('`--validate-schema=false`')}. Caution: May cause unexpected errors."
+DISABLE_SSL_SUGGESTION = (
+    f"Bypass SSL verification with {bold('`--request-tls-verify=false`')}."
 )
+DISABLE_SCHEMA_VALIDATION_SUGGESTION = f"Bypass validation using {bold('`--validate-schema=false`')}. Caution: May cause unexpected errors."
 
 
 def _format_health_check_suggestion(label: str) -> str:
@@ -212,10 +232,18 @@ RUNTIME_ERROR_SUGGESTIONS = {
     "For guidance, visit: https://docs.python.org/3/library/re.html",
     RuntimeErrorType.HYPOTHESIS_UNSUPPORTED_GRAPHQL_SCALAR: "Define a custom strategy for it.\n"
     "For guidance, visit: https://schemathesis.readthedocs.io/en/stable/graphql.html#custom-scalars",
-    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_DATA_TOO_LARGE: _format_health_check_suggestion("data_too_large"),
-    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_FILTER_TOO_MUCH: _format_health_check_suggestion("filter_too_much"),
-    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_TOO_SLOW: _format_health_check_suggestion("too_slow"),
-    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_LARGE_BASE_EXAMPLE: _format_health_check_suggestion("large_base_example"),
+    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_DATA_TOO_LARGE: _format_health_check_suggestion(
+        "data_too_large"
+    ),
+    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_FILTER_TOO_MUCH: _format_health_check_suggestion(
+        "filter_too_much"
+    ),
+    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_TOO_SLOW: _format_health_check_suggestion(
+        "too_slow"
+    ),
+    RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_LARGE_BASE_EXAMPLE: _format_health_check_suggestion(
+        "large_base_example"
+    ),
 }
 
 
@@ -261,7 +289,9 @@ def display_failures(context: ExecutionContext, event: events.Finished) -> None:
 TEST_CASE_ID_TITLE = "Test Case ID"
 
 
-def display_failures_for_single_test(context: ExecutionContext, result: SerializedTestResult) -> None:
+def display_failures_for_single_test(
+    context: ExecutionContext, result: SerializedTestResult
+) -> None:
     """Display a failure for a single method / path."""
     from ...transports.responses import get_reason
 
@@ -269,13 +299,17 @@ def display_failures_for_single_test(context: ExecutionContext, result: Serializ
     if result.is_flaky:
         click.secho(FLAKY_FAILURE_MESSAGE, fg="red")
         click.echo()
-    for idx, (code_sample, group) in enumerate(group_by_case(result.checks, context.code_sample_style), 1):
+    for idx, (code_sample, group) in enumerate(
+        group_by_case(result.checks, context.code_sample_style), 1
+    ):
         # Make server errors appear first in the list of checks
         checks = sorted(group, key=lambda c: c.name != "not_a_server_error")
 
         for check_idx, check in enumerate(checks):
             if check_idx == 0:
-                click.secho(f"{idx}. {TEST_CASE_ID_TITLE}: {check.example.id}", bold=True)
+                click.secho(
+                    f"{idx}. {TEST_CASE_ID_TITLE}: {check.example.id}", bold=True
+                )
             if check.context is not None:
                 title = check.context.title
                 if check.context.message:
@@ -303,9 +337,13 @@ def display_failures_for_single_test(context: ExecutionContext, result: Serializ
                         else:
                             encoding = check.response.encoding or "utf8"
                             try:
-                                payload = base64.b64decode(response_body).decode(encoding)
+                                payload = base64.b64decode(response_body).decode(
+                                    encoding
+                                )
                                 payload = prepare_response_payload(payload)
-                                payload = textwrap.indent(f"\n`{payload}`", prefix="    ")
+                                payload = textwrap.indent(
+                                    f"\n`{payload}`", prefix="    "
+                                )
                                 click.echo(payload)
                             except UnicodeDecodeError:
                                 click.echo("\n    <BINARY>")
@@ -320,11 +358,17 @@ def group_by_case(
 ) -> Generator[tuple[str, Generator[SerializedCheck, None, None]], None, None]:
     checks = deduplicate_failures(checks)
     checks = sorted(checks, key=lambda c: _by_unique_code_sample(c, code_sample_style))
-    yield from groupby(checks, lambda c: _by_unique_code_sample(c, code_sample_style)) # type: ignore
+    yield from groupby(checks, lambda c: _by_unique_code_sample(c, code_sample_style))  # type: ignore
 
 
-def _by_unique_code_sample(check: SerializedCheck, code_sample_style: CodeSampleStyle) -> str:
-    request_body = base64.b64decode(check.example.body).decode() if check.example.body is not None else None
+def _by_unique_code_sample(
+    check: SerializedCheck, code_sample_style: CodeSampleStyle
+) -> str:
+    request_body = (
+        base64.b64decode(check.example.body).decode()
+        if check.example.body is not None
+        else None
+    )
     return code_sample_style.generate(
         method=check.example.method,
         url=check.example.url,
@@ -401,7 +445,9 @@ def display_statistic(context: ExecutionContext, event: events.Finished) -> None
         )
         if context.seed is not None:
             seed_option = f"`--hypothesis-seed={context.seed}`"
-            click.secho(f"\n{bold('Note')}: To replicate these test failures, rerun with {bold(seed_option)}")
+            click.secho(
+                f"\n{bold('Note')}: To replicate these test failures, rerun with {bold(seed_option)}"
+            )
 
     if context.report is not None and not context.is_interrupted:
         if isinstance(context.report, FileReportContext):
@@ -439,7 +485,9 @@ def handle_service_integration(context: ServiceReportContext) -> None:
         service.Error: "red",
         service.Failed: "red",
         service.Timeout: "red",
-    }[event.__class__] # type: ignore
+    }[
+        event.__class__
+    ]  # type: ignore
     status = click.style(event.status, fg=color, bold=True)
     click.echo(f"{title}: {status}\r", nl=False)
     click.echo()
@@ -476,7 +524,9 @@ def display_service_unauthorized(hostname: str) -> None:
         f"using the {bold('`--schemathesis-io-token`')} option "
         f"or the {env_var} environment variable."
     )
-    click.echo("\nFor more information, please visit: https://schemathesis.readthedocs.io/en/stable/service.html")
+    click.echo(
+        "\nFor more information, please visit: https://schemathesis.readthedocs.io/en/stable/service.html"
+    )
 
 
 def display_service_error(event: service.Error, message_prefix: str = "") -> None:
@@ -521,12 +571,17 @@ def display_service_error(event: service.Error, message_prefix: str = "") -> Non
 SERVICE_ERROR_MESSAGE = "An error happened during uploading reports to Schemathesis.io"
 
 
-def ask_to_report(event: service.Error, report_to_issues: bool = True, extra: str = "") -> None:
+def ask_to_report(
+    event: service.Error, report_to_issues: bool = True, extra: str = ""
+) -> None:
     from requests import RequestException
 
     # Likely an internal Schemathesis error
     traceback = event.get_message(True)
-    if isinstance(event.exception, RequestException) and event.exception.response is not None:
+    if (
+        isinstance(event.exception, RequestException)
+        and event.exception.response is not None
+    ):
         response = f"Response: {event.exception.response.text}\n"
     else:
         response = ""
@@ -540,7 +595,9 @@ def ask_to_report(event: service.Error, report_to_issues: bool = True, extra: st
     )
 
 
-def wait_for_report_handler(queue: Queue, title: str, timeout: float = service.WORKER_FINISH_TIMEOUT) -> service.Event:
+def wait_for_report_handler(
+    queue: Queue, title: str, timeout: float = service.WORKER_FINISH_TIMEOUT
+) -> service.Event:
     """Wait for the Schemathesis.io handler to finish its job."""
     start = time.monotonic()
     spinner = create_spinner(SPINNER_REPETITION_NUMBER)
@@ -567,7 +624,9 @@ def create_spinner(repetitions: int) -> Generator[str, None, None]:
 def display_checks_statistics(total: dict[str, dict[str | Status, int]]) -> None:
     padding = 20
     col1_len = max(map(len, total.keys())) + padding
-    col2_len = len(str(max(total.values(), key=lambda v: v["total"])["total"])) * 2 + padding
+    col2_len = (
+        len(str(max(total.values(), key=lambda v: v["total"])["total"])) * 2 + padding
+    )
     col3_len = padding
     click.secho("Performed checks:", bold=True)
     template = f"    {{:{col1_len}}}{{:{col2_len}}}{{:{col3_len}}}"
@@ -575,7 +634,9 @@ def display_checks_statistics(total: dict[str, dict[str | Status, int]]) -> None
         display_check_result(check_name, results, template)
 
 
-def display_check_result(check_name: str, results: dict[str | Status, int], template: str) -> None:
+def display_check_result(
+    check_name: str, results: dict[str | Status, int], template: str
+) -> None:
     """Show results of single check execution."""
     if Status.failure in results:
         verdict = "FAILED"
@@ -585,7 +646,13 @@ def display_check_result(check_name: str, results: dict[str | Status, int], temp
         color = "green"
     success = results.get(Status.success, 0)
     total = results.get("total", 0)
-    click.echo(template.format(check_name, f"{success} / {total} passed", click.style(verdict, fg=color, bold=True)))
+    click.echo(
+        template.format(
+            check_name,
+            f"{success} / {total} passed",
+            click.style(verdict, fg=color, bold=True),
+        )
+    )
 
 
 VERIFY_URL_SUGGESTION = "Verify that the URL points directly to the Open API schema"
@@ -612,8 +679,13 @@ SCHEMA_ERROR_SUGGESTIONS = {
 }
 
 
-def should_skip_suggestion(context: ExecutionContext, event: events.InternalError) -> bool:
-    return event.subtype == SchemaErrorType.CONNECTION_OTHER and context.wait_for_schema is not None
+def should_skip_suggestion(
+    context: ExecutionContext, event: events.InternalError
+) -> bool:
+    return (
+        event.subtype == SchemaErrorType.CONNECTION_OTHER
+        and context.wait_for_schema is not None
+    )
 
 
 def _split_traceback(traceback: str) -> list[str]:
@@ -633,7 +705,9 @@ def _maybe_display_tip(suggestion: str | None) -> None:
         click.secho(f"\n{click.style('Tip:', bold=True, fg='green')} {suggestion}")
 
 
-def display_internal_error(context: ExecutionContext, event: events.InternalError) -> None:
+def display_internal_error(
+    context: ExecutionContext, event: events.InternalError
+) -> None:
     click.secho(event.title, fg="red", bold=True)
     click.echo()
     click.secho(event.message)
@@ -645,12 +719,12 @@ def display_internal_error(context: ExecutionContext, event: events.InternalErro
         extras = [event.exception]
     _display_extras(extras)
     if not should_skip_suggestion(context, event):
-        if event.type == InternalErrorType.SCHEMA and isinstance(event.subtype, SchemaErrorType):
+        if event.type == InternalErrorType.SCHEMA and isinstance(
+            event.subtype, SchemaErrorType
+        ):
             suggestion = SCHEMA_ERROR_SUGGESTIONS.get(event.subtype)
         elif context.show_trace:
-            suggestion = (
-                f"Please consider reporting the traceback above to our issue tracker:\n\n  {ISSUE_TRACKER_URL}."
-            )
+            suggestion = f"Please consider reporting the traceback above to our issue tracker:\n\n  {ISSUE_TRACKER_URL}."
         else:
             suggestion = f"To see full tracebacks, add {bold('`--show-trace`')} to your CLI options"
         _maybe_display_tip(suggestion)
@@ -658,7 +732,9 @@ def display_internal_error(context: ExecutionContext, event: events.InternalErro
 
 def handle_initialized(context: ExecutionContext, event: events.Initialized) -> None:
     """Display information about the test session."""
-    context.operations_count = cast(int, event.operations_count)  # INVARIANT: should not be `None`
+    context.operations_count = cast(
+        int, event.operations_count
+    )  # INVARIANT: should not be `None`
     context.seed = event.seed
     display_section_name("Schemathesis test session starts")
     if context.verbosity > 0:
@@ -694,7 +770,9 @@ def handle_initialized(context: ExecutionContext, event: events.Initialized) -> 
 TRUNCATION_PLACEHOLDER = "[...]"
 
 
-def handle_before_execution(context: ExecutionContext, event: events.BeforeExecution) -> None:
+def handle_before_execution(
+    context: ExecutionContext, event: events.BeforeExecution
+) -> None:
     """Display what method / path will be tested next."""
     # We should display execution result + percentage in the end. For example:
     max_length = get_terminal_width() - len(" . [XXX%]") - len(TRUNCATION_PLACEHOLDER)
@@ -709,7 +787,9 @@ def handle_before_execution(context: ExecutionContext, event: events.BeforeExecu
     click.echo(message, nl=False)
 
 
-def handle_after_execution(context: ExecutionContext, event: events.AfterExecution) -> None:
+def handle_after_execution(
+    context: ExecutionContext, event: events.AfterExecution
+) -> None:
     """Display the execution result + current progress at the same line with the method / path names."""
     context.operations_processed += 1
     context.results.append(event.result)
@@ -735,22 +815,26 @@ def handle_interrupted(context: ExecutionContext, event: events.Interrupted) -> 
     display_section_name("KeyboardInterrupt", "!", bold=False)
 
 
-def handle_internal_error(context: ExecutionContext, event: events.InternalError) -> None:
+def handle_internal_error(
+    context: ExecutionContext, event: events.InternalError
+) -> None:
     display_internal_error(context, event)
     raise click.Abort
 
 
 class DefaultOutputStyleHandler(EventHandler):
-    def handle_event(self, context: ExecutionContext, event: events.ExecutionEvent) -> None:
+    def handle_event(
+        self, context: ExecutionContext, event: events.ExecutionEvent
+    ) -> None:
         """Choose and execute a proper handler for the given event."""
         if isinstance(event, events.Initialized):
-            print("It's handled by initialized handler")
+            logger.debug("It's handled by initialized handler")
             handle_initialized(context, event)
         if isinstance(event, events.BeforeExecution):
-            print("It's handled by before_ex handler")
+            logger.debug("It's handled by before_ex handler")
             handle_before_execution(context, event)
         if isinstance(event, events.AfterExecution):
-            print("It's handled by after_ex handler")
+            logger.debug("It's handled by after_ex handler")
             context.hypothesis_output.extend(event.hypothesis_output)
             handle_after_execution(context, event)
         if isinstance(event, events.Finished):

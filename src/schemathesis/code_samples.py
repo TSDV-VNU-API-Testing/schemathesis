@@ -9,6 +9,7 @@ from .types import Headers
 
 if TYPE_CHECKING:
     from requests.structures import CaseInsensitiveDict
+from .specs.openapi._vas import logger
 
 
 @lru_cache
@@ -67,13 +68,19 @@ class CodeSampleStyle(str, Enum):
         extra_headers: Headers | None = None,
     ) -> str:
         """Generate a code snippet for making HTTP requests."""
-        print("deps/schemathesis/src/schemathesis/code_samples.py/generate: Generate body")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/code_samples.py/generate: Generate body"
+        )
         handlers = {
             self.curl: _generate_curl,
             self.python: _generate_requests,
         }
         return handlers[self](
-            method=method, url=url, body=body, headers=_filter_headers(headers, extra_headers), verify=verify
+            method=method,
+            url=url,
+            body=body,
+            headers=_filter_headers(headers, extra_headers),
+            verify=verify,
         )
 
 

@@ -58,7 +58,7 @@ from .sanitization import sanitize_request, sanitize_response
 from .serializers import Serializer, SerializerContext
 from .transports import serialize_payload
 from .types import Body, Cookies, FormData, Headers, NotSet, PathParameters, Query
-from .specs.openapi._vas import logger
+from .specs.openapi._vas import logger, VAS_KEY_PREFIX
 
 if TYPE_CHECKING:
     import unittest
@@ -118,7 +118,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     """Prepare request data for generating code samples."""
     import requests
 
-    #logger.info("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
+    # logger.debug("deps/schemathesis/src/schemathesis/models.py/prepare_request_data")
     kwargs = {
         key: value
         for key, value in kwargs.items()
@@ -137,7 +137,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
-    #logger.info("Case class is called")
+    # logger.debug("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -158,7 +158,7 @@ class Case:
     # The media type for cases with a payload. For example, "application/json"
     media_type: str | None = None
     source: CaseSource | None = None
-    # Meta-data for image data 
+    # Meta-data for image data
     metadata: dict[str, Any] = field(default_factory=lambda: {})
 
     # The way the case was generated (None for manually crafted ones)
@@ -334,7 +334,10 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
-        logger.info("deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: %s", self.body)
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: %s",
+            self.body,
+        )
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
         if not base_url.endswith("/"):
@@ -345,9 +348,16 @@ class Case:
 
         if isinstance(self.body, dict):
             # Create a new body without meta-data
-            new_body: dict[str, Any] = {}
-            new_body = {key: value for key, value in self.body.items() if not key.startswith("vas_")}
-            self.metadata = {key: value for key, value in self.body.items() if key.startswith("vas_")}
+            new_body = {
+                key: value
+                for key, value in self.body.items()
+                if not key.startswith(VAS_KEY_PREFIX)
+            }
+            self.metadata = {
+                f"{key[len(VAS_KEY_PREFIX) + 1 ::]}": value
+                for key, value in self.body.items()
+                if key.startswith(VAS_KEY_PREFIX)
+            }
             self.body = new_body
 
         if serializer is not None and not isinstance(self.body, NotSet):
@@ -362,7 +372,7 @@ class Case:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
                 final_headers.setdefault(key, value)
-        logger.info("This is extra: %s", extra)
+        logger.debug("This is extra: %s", extra)
         return {
             "method": self.method,
             "url": url,
@@ -378,19 +388,27 @@ class Case:
         session: requests.Session | None = None,
         headers: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | None = None, 
+        cookies: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> requests.Response:
         import requests
 
         """Make a network call with `requests`."""
-        logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Sending requests")
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py/call function: Sending requests"
+        )
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
-        logger.info("deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s", data)
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s",
+            data,
+        )
         data.update(kwargs)
-        logger.info("deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : %s", data)
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : %s",
+            data,
+        )
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
@@ -405,8 +423,10 @@ class Case:
         verify = data.get("verify", True)
         try:
             with self.operation.schema.ratelimit():
-                response = session.request(**data)  
-                logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Request was sent")
+                response = session.request(**data)
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/models.py/call function: Request was sent"
+                )
         except requests.Timeout as exc:
             timeout = (
                 1000 * data["timeout"]
@@ -420,8 +440,10 @@ class Case:
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
                 context=failures.RequestTimeout(message=message, timeout=timeout),
             ) from None
-        logger.info("deps/schemathesis/src/schemathesis/models.py/call function: Response was received")
-        response.verify = verify  
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py/call function: Response was received"
+        )
+        response.verify = verify
         dispatch("after_call", hook_context, self, response)
         if close_session:
             session.close()
@@ -626,7 +648,7 @@ class Case:
         base_url = self.base_url or "http://127.0.0.1"
         kwargs = self.as_requests_kwargs(base_url)
         request = requests.Request(**kwargs)
-        prepared = requests.Session().prepare_request(request)  
+        prepared = requests.Session().prepare_request(request)
         return cast(str, prepared.url)
 
     def partial_deepcopy(self) -> Case:
@@ -635,9 +657,9 @@ class Case:
             operation=self.operation.partial_deepcopy(),
             data_generation_method=self.data_generation_method,
             media_type=self.media_type,
-            source=self.source
-            if self.source is None
-            else self.source.partial_deepcopy(),
+            source=(
+                self.source if self.source is None else self.source.partial_deepcopy()
+            ),
             path_parameters=fast_deepcopy(self.path_parameters),
             headers=fast_deepcopy(self.headers),
             cookies=fast_deepcopy(self.cookies),
@@ -756,7 +778,7 @@ class APIOperation(Generic[P, C]):
 
     def __post_init__(self) -> None:
         if self.verbose_name is None:
-            self.verbose_name = f"{self.method.upper()} {self.full_path}" 
+            self.verbose_name = f"{self.method.upper()} {self.full_path}"
 
     @property
     def full_path(self) -> str:
@@ -1012,7 +1034,6 @@ class Request:
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
             body = body.encode("utf-8")
-        
 
         # these values have `str` type at this point
         uri = cast(str, prepared.url)
