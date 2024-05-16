@@ -126,7 +126,6 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
         for key, value in kwargs.items()
         if key in get_request_signature().parameters
     }
-    logger.debug("deps/schemathesis/src/schemathesis/models.py/prepare_request_data -> kwargs in prepare_request_data")
     request = requests.Request(**kwargs).prepare()
     return PreparedRequestData(
         method=str(request.method),
@@ -140,7 +139,6 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
 class Case:
     """A single test case parameters."""
 
-    # logger.debug("Case class is called")
     _id_generator = count(1)
 
     operation: APIOperation
@@ -243,7 +241,6 @@ class Case:
     ) -> PreparedRequestData:
         base_url = self.get_full_base_url()
         kwargs = self.as_requests_kwargs(base_url, headers=headers)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: kwargs in prepare_code_sample_data -> %s", kwargs)
         return prepare_request_data(kwargs)
 
     def get_code_to_reproduce(
@@ -363,8 +360,8 @@ class Case:
                 if key.startswith(VAS_KEY_PREFIX)
             }
             self.body = new_body
-            # logger.info("deps/schemathesis/src/schemathesis/models.py: body: %s", self.body)
-            logger.info("deps/schemathesis/src/schemathesis/models.py: metadata: %s", self.metadata)
+            logger.debug("deps/schemathesis/src/schemathesis/models.py: body: %s", self.body)
+            logger.debug("deps/schemathesis/src/schemathesis/models.py: metadata: %s", self.metadata)
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
@@ -382,20 +379,18 @@ class Case:
                 formatted_files = []
                 for element in files:
                     _key, _value = element[0], element[1]
-                    print("Key: ", _key)
                     if not isinstance(_value, tuple) and _value[0] != None:
-                        _value = (self.metadata[_key]["imageName"], _value, "image/" + self.metadata[_key]["imageType"])
+                        if _key in self.metadata:
+                            _value = (self.metadata[_key]["imageName"], _value, "image/" + self.metadata[_key]["imageType"])
                     formatted_files.append((_key, _value))
                 new_extra[key] = formatted_files
             else:
                 new_extra[key] = value
-        print(new_extra)
         additional_headers = extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
                 final_headers.setdefault(key, value)
-        # logger.debug("This is extra: %s", extra)
         return {
             "method": self.method,
             "url": url,
@@ -417,9 +412,6 @@ class Case:
         import requests
 
         """Make a network call with `requests`."""
-        # logger.debug(
-        #     "deps/schemathesis/src/schemathesis/models.py/call function: Sending requests"
-        # )
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
@@ -428,11 +420,6 @@ class Case:
             data,
         )
         data.update(kwargs)
-        # logger.debug("deps/schemathesis/src/schemathesis/models.py: kwargs in call %s", kwargs)
-        # logger.debug(
-        #     "deps/schemathesis/src/schemathesis/models.py: call function -> Data after update : %s",
-        #     data,
-        # )
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
@@ -448,9 +435,6 @@ class Case:
         try:
             with self.operation.schema.ratelimit():
                 response = session.request(**data)
-                # logger.debug(
-                #     "deps/schemathesis/src/schemathesis/models.py/call function: Request was sent"
-                # )
         except requests.Timeout as exc:
             timeout = (
                 1000 * data["timeout"]
@@ -464,9 +448,6 @@ class Case:
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
                 context=failures.RequestTimeout(message=message, timeout=timeout),
             ) from None
-        # logger.debug(
-        #     "deps/schemathesis/src/schemathesis/models.py/call function: Response was received"
-        # )
         response.verify = verify
         dispatch("after_call", hook_context, self, response)
         if close_session:
@@ -526,7 +507,6 @@ class Case:
         requests_kwargs = self.as_requests_kwargs(
             base_url=self.get_full_base_url(), headers=headers
         )
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: kwargs in call_wsgi -> %s", requests_kwargs)
         response.request = requests.Request(**requests_kwargs).prepare()
         dispatch("after_call", hook_context, self, response)
         return response
@@ -548,7 +528,6 @@ class Case:
             )
         if base_url is None:
             base_url = self.get_full_base_url()
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: kwargs in call_asgi -> %s", kwargs)
         with ASGIClient(application) as client:
             return self.call(
                 base_url=base_url, session=client, headers=headers, **kwargs
@@ -672,7 +651,6 @@ class Case:
 
         base_url = self.base_url or "http://127.0.0.1"
         kwargs = self.as_requests_kwargs(base_url)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: kwargs in get_full_url -> %s", kwargs)
         request = requests.Request(**kwargs)
         prepared = requests.Session().prepare_request(request)
         return cast(str, prepared.url)
@@ -1049,7 +1027,6 @@ class Request:
 
         base_url = case.get_full_base_url()
         kwargs = case.as_requests_kwargs(base_url)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_case : kwargs in from_case -> %s", kwargs)
         request = requests.Request(**kwargs)
         prepared = session.prepare_request(request)
         return cls.from_prepared_request(prepared)
@@ -1057,19 +1034,6 @@ class Request:
     @classmethod
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
-        # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request -> %s", prepared.body)
-        # if isinstance(prepared.body, bytes):
-        #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request -> %s", True)
-        #     try:
-        #         data = prepared.body.decode('utf-8')
-        #     except Exception as e:
-        #         logger.debug(e)
-        #     logger.debug("deps/schemathesis/src/schemathesis/models.py: parse to string success -> %s", data)
-        #     start_index = data.find('"\r')
-        #     end_index = data.find(", '")
-        # # Remove the unwanted portion of the string
-        # if start_index != -1 and end_index != -1:
-        #     result = data[:start_index] + data[end_index:]
         body = prepared.body
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
@@ -1182,7 +1146,6 @@ class Interaction:
         status: Status,
         checks: list[Check],
     ) -> Interaction:
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_case -> ID: %s", case.id)
         return cls(
             request=Request.from_prepared_request(response.request),
             response=Response.from_requests(response),
@@ -1315,8 +1278,6 @@ class TestResult:
         status: Status,
         checks: list[Check],
     ) -> None:
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: store_interactions")
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: Case body %s", case.body)
         self.interactions.append(
             Interaction.from_requests(case, response, status, checks)
         )

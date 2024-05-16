@@ -110,11 +110,3 @@ logging.basicConfig(
 logger = logging.getLogger(name="Logger")
 logger.setLevel(level=CURRENT_LEVEL)
 
-# for handler in logger.handlers:
-#     logger.removeHandler(handler)
-# console_handle = logging.StreamHandler(sys.stdout)
-# console_handle.setLevel(level=CURRENT_LEVEL)
-# formatter = logging.Formatter(CURRENT_FORMAT)
-# console_handle.setFormatter(formatter)
-
-# logger.addHandler(console_handle)
