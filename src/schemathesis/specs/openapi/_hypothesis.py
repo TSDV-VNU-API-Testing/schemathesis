@@ -26,14 +26,13 @@ from ...serializers import Binary
 from ...transports.headers import has_invalid_characters, is_latin_1_encodable
 from ...types import NotSet
 from ...utils import compose, skip
-from ._vas import VAS_STRING_FORMATS
+from ._vas import VAS_STRING_FORMATS, logger
 from .constants import LOCATION_TO_CONTAINER
 from .formats import STRING_FORMATS
 from .negative import negative_schema
 from .negative.utils import can_negate
 from .parameters import OpenAPIBody, parameters_to_json_schema
 from .utils import is_header_location
-from ._vas import logger
 
 HEADER_FORMAT = "_header_value"
 PARAMETERS = frozenset(("path_parameters", "headers", "cookies", "query", "body"))
@@ -242,7 +241,6 @@ def get_case_strategy(
             else "None"
         )
     )
-    logger.debug("-------------")
 
     auth_context = auths.AuthContext(
         operation=operation,
