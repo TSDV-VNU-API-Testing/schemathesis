@@ -28,7 +28,7 @@ from faker_file.providers.xlsx_file import XlsxFileProvider
 from faker_file.providers.zip_file import ZipFileProvider
 from hypothesis import strategies as st
 
-DEV = False
+DEV = True
 
 FAKER = Faker()
 
