@@ -28,6 +28,8 @@ from faker_file.providers.xlsx_file import XlsxFileProvider
 from faker_file.providers.zip_file import ZipFileProvider
 from hypothesis import strategies as st
 
+DEV = False
+
 FAKER = Faker()
 
 FAKER_FILE_PROVIDERS = {
@@ -94,7 +96,7 @@ VAS_STRING_FORMATS = {
     # "byte": get_file_strategy().map(lambda x: b64encode(x).decode()),
 }
 
-CURRENT_LEVEL = logging.DEBUG
+CURRENT_LEVEL = logging.DEBUG if DEV else logging.INFO
 CURRENT_FORMAT = (
     "%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(levelname)s:%(message)s"
 )
