@@ -30,7 +30,7 @@ from hypothesis import strategies as st
 # from faker_file.providers.zip_file import ZipFileProvider
 
 
-DEV = True
+DEV = False
 
 # FAKER = Faker()
 
