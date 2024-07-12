@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import inspect
 from math import e
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache, partial
 from itertools import chain, count
-from logging import LogRecord, Logger
+from logging import LogRecord
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -360,8 +361,8 @@ class Case:
                 if key.startswith(VAS_KEY_PREFIX)
             }
             self.body = new_body
-            logger.debug("deps/schemathesis/src/schemathesis/models.py: body: %s", self.body)
-            logger.debug("deps/schemathesis/src/schemathesis/models.py: metadata: %s", self.metadata)
+            # logger.debug("deps/schemathesis/src/schemathesis/models.py: body: %s", self.body)
+            # logger.debug("deps/schemathesis/src/schemathesis/models.py: metadata: %s", self.metadata)
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
@@ -369,7 +370,7 @@ class Case:
             extra = {}
         if self._auth is not None:
             extra["auth"] = self._auth
-        logger.debug("deps/schemathesis/src/schemathesis/models.py -> extra: %s", extra)
+        # logger.debug("deps/schemathesis/src/schemathesis/models.py -> extra: %s", extra)
 
         new_extra: dict[str, Any] = {}
         files = []
@@ -386,7 +387,9 @@ class Case:
                 new_extra[key] = formatted_files
             else:
                 new_extra[key] = value
-        additional_headers = extra.pop("headers", None)
+
+        # logger.debug("deps/schemathesis/src/schemathesis/models.py -> new_extra: %s", new_extra)
+        additional_headers = new_extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -415,10 +418,10 @@ class Case:
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s",
-            data,
-        )
+        # logger.debug(
+        #     "deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s",
+        #     data,
+        # )
         data.update(kwargs)
         if params is not None:
             _merge_dict_to(data, "params", params)
@@ -450,6 +453,19 @@ class Case:
             ) from None
         response.verify = verify
         dispatch("after_call", hook_context, self, response)
+
+        # Convert the request body of image data to a tuple
+        # Example: {'files': [('image', ('image.jpg', 'bABC', 'image/jpeg'))]}
+        if 'files' in data:
+            for file in data['files']:
+                # logger.debug("file: %s", file)
+                value = list(file[1])
+                value[1] = file[1][0]
+                res = list()
+                res.append(file[0])
+                res.append(tuple(value))
+                data['files'] = tuple(res)
+                # logger.debug("file: %s", data['files'])
         if close_session:
             session.close()
         return response
@@ -1028,6 +1044,7 @@ class Request:
         base_url = case.get_full_base_url()
         kwargs = case.as_requests_kwargs(base_url)
         request = requests.Request(**kwargs)
+        # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_case in Request -> request: %s", request)
         prepared = session.prepare_request(request)
         return cls.from_prepared_request(prepared)
 
@@ -1035,6 +1052,7 @@ class Request:
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
         body = prepared.body
+        # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s", body)
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
             body = body.encode("utf-8")
@@ -1146,8 +1164,29 @@ class Interaction:
         status: Status,
         checks: list[Check],
     ) -> Interaction:
+        
+        new_request: Request = Request.from_prepared_request(response.request)
+        # if case.metadata is not None and new_request.body is not None:
+        #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> request.body: %s", base64.b64decode(new_request.body))
+        #     for key in case.metadata:
+        #         if isinstance(case.body, dict) and key in case.body:
+        #             case.body[key] = case.metadata[key]["imageName"]
+        #             logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", case.body)
+        #             new_request.body = base64.b64encode(str(case.body).encode("utf-8")).decode("utf-8")
+        
+        # Remove image data from the request body and replace it with the image name
+        if new_request.body is not None:
+            # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", base64.b64decode(Request.from_prepared_request(response.request).body))
+            base64_body = base64.b64decode(Request.from_prepared_request(response.request).body)
+            if b"filename" in base64_body:
+                start = base64_body.find(b"\r\n\r\n", base64_body.find(b"filename"), ) + 4
+                end_of_image_name = base64_body.find(b"\r\n", base64_body.find(b"filename"), )
+                image_name = base64_body[base64_body.find(b"filename") + 10:end_of_image_name]
+                end = base64_body.find(b"\r\n--", start, )
+                request_body = base64_body[:start] + image_name + base64_body[end:]
+                new_request.body = base64.b64encode(request_body).decode("utf-8")
         return cls(
-            request=Request.from_prepared_request(response.request),
+            request=new_request,
             response=Response.from_requests(response),
             status=status,
             checks=checks,
@@ -1172,6 +1211,7 @@ class Interaction:
         session = requests.Session()
         session.headers.update(headers)
         return cls(
+            case=case,
             request=Request.from_case(case, session),
             response=Response.from_wsgi(response, elapsed),
             status=status,

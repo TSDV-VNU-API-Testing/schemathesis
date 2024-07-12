@@ -93,8 +93,8 @@ VAS_STRING_FORMATS = {
     # "binary": get_file_strategy().map(Binary),
     # "byte": get_file_strategy().map(lambda x: b64encode(x).decode()),
 }
-
-CURRENT_LEVEL = logging.INFO
+DEV = True
+CURRENT_LEVEL = logging.DEBUG if DEV else logging.INFO
 CURRENT_FORMAT = (
     "%(asctime)s %(filename)s:%(lineno)d:%(funcName)s %(levelname)s:%(message)s"
 )

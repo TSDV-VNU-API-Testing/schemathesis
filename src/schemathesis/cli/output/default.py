@@ -365,7 +365,8 @@ def _by_unique_code_sample(
     check: SerializedCheck, code_sample_style: CodeSampleStyle
 ) -> str:
     request_body = (
-        base64.b64decode(check.example.body).decode()
+        # Ignore decoding errors caused by invalid base64
+        base64.b64decode(check.example.body).decode('utf-8', 'ignore')
         if check.example.body is not None
         else None
     )
