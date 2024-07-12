@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import datetime
 import inspect
-from math import e
 import textwrap
 from collections import Counter
 from contextlib import contextmanager
@@ -60,9 +59,9 @@ from .internal.deprecation import deprecated_property
 from .parameters import Parameter, ParameterSet, PayloadAlternatives
 from .sanitization import sanitize_request, sanitize_response
 from .serializers import Serializer, SerializerContext
+from .specs.openapi._vas import VAS_KEY_PREFIX, logger
 from .transports import serialize_payload
 from .types import Body, Cookies, FormData, Headers, NotSet, PathParameters, Query
-from .specs.openapi._vas import logger, VAS_KEY_PREFIX
 
 if TYPE_CHECKING:
     import unittest
@@ -336,10 +335,12 @@ class Case:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in {header.lower() for header in final_headers}:
                 final_headers["Content-Type"] = self.media_type
+
         logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> Request body: %s",
+            "deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> old body: %s",
             self.body,
         )
+
         base_url = self._get_base_url(base_url)
         formatted_path = self.formatted_path.lstrip("/")
         if not base_url.endswith("/"):
@@ -356,13 +357,20 @@ class Case:
                 if not key.startswith(VAS_KEY_PREFIX)
             }
             self.metadata = {
-                f"{key[len(VAS_KEY_PREFIX) + 1 ::]}": value
+                f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
                 for key, value in self.body.items()
                 if key.startswith(VAS_KEY_PREFIX)
             }
             self.body = new_body
-            # logger.debug("deps/schemathesis/src/schemathesis/models.py: body: %s", self.body)
-            # logger.debug("deps/schemathesis/src/schemathesis/models.py: metadata: %s", self.metadata)
+
+            logger.debug(
+                "deps/schemathesis/src/schemathesis/models.py: new body: %s", self.body
+            )
+            logger.debug(
+                "deps/schemathesis/src/schemathesis/models.py: new metadata: %s",
+                self.metadata,
+            )
+
         if serializer is not None and not isinstance(self.body, NotSet):
             context = SerializerContext(case=self)
             extra = serializer.as_requests(context, self.body)
@@ -370,26 +378,38 @@ class Case:
             extra = {}
         if self._auth is not None:
             extra["auth"] = self._auth
-        # logger.debug("deps/schemathesis/src/schemathesis/models.py -> extra: %s", extra)
 
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py -> old extra: %s", extra
+        )
+
+        # Convert key "files" in extra, it's binary field to right tuple format
         new_extra: dict[str, Any] = {}
         files = []
         for key, value in extra.items():
-            if key == "files":
-                files = extra["files"]
-                formatted_files = []
-                for element in files:
-                    _key, _value = element[0], element[1]
-                    if not isinstance(_value, tuple) and _value[0] != None:
-                        if _key in self.metadata:
-                            _value = (self.metadata[_key]["imageName"], _value, "image/" + self.metadata[_key]["imageType"])
-                    formatted_files.append((_key, _value))
-                new_extra[key] = formatted_files
-            else:
+            if key != "files":
                 new_extra[key] = value
+                continue
 
-        # logger.debug("deps/schemathesis/src/schemathesis/models.py -> new_extra: %s", new_extra)
-        additional_headers = new_extra.pop("headers", None)
+            files = extra["files"]
+            formatted_files = []
+            for element in files:
+                _key, _value = element[0], element[1]
+                if not isinstance(_value, tuple) and _value[0] != None:
+                    if _key in self.metadata:
+                        _value = (
+                            self.metadata[_key]["image_name"],
+                            _value,
+                            self.metadata[_key]["image_type"],
+                        )
+                formatted_files.append((_key, _value))
+            new_extra[key] = formatted_files
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py -> new extra: %s", new_extra
+        )
+
+        additional_headers = extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -418,10 +438,12 @@ class Case:
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
         data = self.as_requests_kwargs(base_url, headers)
-        # logger.debug(
-        #     "deps/schemathesis/src/schemathesis/models.py: call function -> Data after as_request_kwargs: %s",
-        #     data,
-        # )
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: call function -> data as_request_kwargs: %s",
+            data,
+        )
+
         data.update(kwargs)
         if params is not None:
             _merge_dict_to(data, "params", params)
@@ -451,6 +473,7 @@ class Case:
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
                 context=failures.RequestTimeout(message=message, timeout=timeout),
             ) from None
+
         response.verify = verify
         dispatch("after_call", hook_context, self, response)
 
