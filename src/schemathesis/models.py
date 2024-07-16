@@ -1178,7 +1178,7 @@ class Interaction:
         
         logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> response.request.body: %s", response.request.body)
         logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s", case.body)
-        new_request: Request = Request.from_prepared_request(response.request)
+        # new_request: Request = Request.from_prepared_request(response.request)
         # if case.metadata is not None and new_request.body is not None:
         #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> request.body: %s", base64.b64decode(new_request.body))
         #     for key in case.metadata:
@@ -1200,7 +1200,7 @@ class Interaction:
         #         request_body = base64_body[:start] + image_name + base64_body[end:]
         #         new_request.body = base64.b64encode(request_body).decode("utf-8")
         return cls(
-            request=new_request,
+            request=Request.from_prepared_request(response.request),
             response=Response.from_requests(response),
             status=status,
             checks=checks,

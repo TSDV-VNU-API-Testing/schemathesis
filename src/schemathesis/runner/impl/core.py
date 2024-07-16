@@ -801,18 +801,31 @@ def _network_test(
 
             if case.metadata is not None:
                 logger.debug("metadata in core.py: %s", case.metadata)
-                for key, value in case.metadata.items():
-                    logger.debug("key in metadata in core.py: %s", key)
-                    if isinstance(case.body, dict) and key in case.body:
-                        case.body[key] = case.metadata[key]["image_name"]
+                # for key, value in case.metadata.items():
+                #     logger.debug("key in metadata in core.py: %s", key)
+                #     if isinstance(case.body, dict) and key in case.body:
+                #         case.body[key] = case.metadata[key]["image_name"]
 
-                        # Create a new tuple with the desired change
-                        new_tuple = (existing_tuple[0], case.metadata[key]["image_name"])
+                #         # Create a new tuple with the desired change
+                #         new_tuple = (existing_tuple[0], case.metadata[key]["image_name"])
 
-                        # Update the list with the new tuple
-                        requests_kwargs['files'][0] = new_tuple
+                #         # Update the list with the new tuple
+                #         requests_kwargs['files'][0] = new_tuple
+                for i, (key, value) in enumerate(requests_kwargs['files']):
+                    # Check if the key is in metadata
+                    if key in case.metadata:
+                        # Check if the current value is a tuple
+                        if isinstance(value, tuple):
+                            # Create a new tuple with the updated image name
+                            new_tuple = (value[0], case.metadata[key]["image_name"], *value[2:])
+                            # Update the list with the new tuple
+                            requests_kwargs['files'][i] = (key, new_tuple)
+                        else:
+                            # If not a tuple, directly update with the new image name
+                            requests_kwargs['files'][i] = (key, case.metadata[key]["image_name"])
+                        logger.debug("Updated file in kwargs: %s", requests_kwargs['files'][i])
         # requests_kwargs['files'][0][1] = case.metadata['image_name']
-        logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
+            logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
         logger.debug("request_kargs in core.py: %s", requests_kwargs)
         request = requests.Request(**requests_kwargs).prepare()
         logger.debug("request in core.py: %s", request.body)
