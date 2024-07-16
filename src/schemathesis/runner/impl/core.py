@@ -791,6 +791,33 @@ def _network_test(
     run_targets(targets, context)
     status = Status.success
     try:
+        logger.debug("kwargs in core.py: %s", kwargs)
+        requests_kwargs = case.as_requests_kwargs(
+            base_url=case.get_full_base_url(), headers=headers
+        )
+        if 'files' in requests_kwargs:
+            existing_tuple = requests_kwargs['files'][0]
+            logger.debug("existing tuple in kwargs in core.py: %s", existing_tuple)
+
+            if case.metadata is not None:
+                logger.debug("metadata in core.py: %s", case.metadata)
+                for key, value in case.metadata.items():
+                    logger.debug("key in metadata in core.py: %s", key)
+                    if isinstance(case.body, dict) and key in case.body:
+                        case.body[key] = case.metadata[key]["image_name"]
+
+                        # Create a new tuple with the desired change
+                        new_tuple = (existing_tuple[0], case.metadata[key]["image_name"])
+
+                        # Update the list with the new tuple
+                        requests_kwargs['files'][0] = new_tuple
+        # requests_kwargs['files'][0][1] = case.metadata['image_name']
+        logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
+        logger.debug("request_kargs in core.py: %s", requests_kwargs)
+        request = requests.Request(**requests_kwargs).prepare()
+        logger.debug("request in core.py: %s", request.body)
+        response.request = request
+        logger.debug("case in core.py: %s", case.body)
         run_checks(
             case=case,
             checks=checks,

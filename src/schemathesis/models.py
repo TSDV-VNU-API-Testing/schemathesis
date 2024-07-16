@@ -127,6 +127,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
         if key in get_request_signature().parameters
     }
     request = requests.Request(**kwargs).prepare()
+    # logger.debug("in prepare request data ", request.body)
     return PreparedRequestData(
         method=str(request.method),
         url=str(request.url),
@@ -351,17 +352,17 @@ class Case:
 
         if isinstance(self.body, dict):
             # Create a new body without meta-data
-            new_body = {
-                key: value
-                for key, value in self.body.items()
-                if not key.startswith(VAS_KEY_PREFIX)
-            }
+            # new_body = {
+            #     key: value
+            #     for key, value in self.body.items()
+            #     if not key.startswith(VAS_KEY_PREFIX)
+            # }
             self.metadata = {
                 f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
                 for key, value in self.body.items()
                 if key.startswith(VAS_KEY_PREFIX)
             }
-            self.body = new_body
+            # self.body = new_body
 
             logger.debug(
                 "deps/schemathesis/src/schemathesis/models.py: new body: %s", self.body
@@ -476,19 +477,6 @@ class Case:
 
         response.verify = verify
         dispatch("after_call", hook_context, self, response)
-
-        # Convert the request body of image data to a tuple
-        # Example: {'files': [('image', ('image.jpg', 'bABC', 'image/jpeg'))]}
-        if 'files' in data:
-            for file in data['files']:
-                # logger.debug("file: %s", file)
-                value = list(file[1])
-                value[1] = file[1][0]
-                res = list()
-                res.append(file[0])
-                res.append(tuple(value))
-                data['files'] = tuple(res)
-                # logger.debug("file: %s", data['files'])
         if close_session:
             session.close()
         return response
@@ -1074,8 +1062,8 @@ class Request:
     @classmethod
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
+        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s", prepared.body)
         body = prepared.body
-        # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s", body)
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
             body = body.encode("utf-8")
@@ -1188,26 +1176,29 @@ class Interaction:
         checks: list[Check],
     ) -> Interaction:
         
+        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> response.request.body: %s", response.request.body)
+        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s", case.body)
         new_request: Request = Request.from_prepared_request(response.request)
         # if case.metadata is not None and new_request.body is not None:
         #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> request.body: %s", base64.b64decode(new_request.body))
         #     for key in case.metadata:
         #         if isinstance(case.body, dict) and key in case.body:
-        #             case.body[key] = case.metadata[key]["imageName"]
+        #             logger.debug("")
+        #             case.body[key] = case.metadata[key]["image_name"]
         #             logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", case.body)
         #             new_request.body = base64.b64encode(str(case.body).encode("utf-8")).decode("utf-8")
         
         # Remove image data from the request body and replace it with the image name
-        if new_request.body is not None:
-            # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", base64.b64decode(Request.from_prepared_request(response.request).body))
-            base64_body = base64.b64decode(Request.from_prepared_request(response.request).body)
-            if b"filename" in base64_body:
-                start = base64_body.find(b"\r\n\r\n", base64_body.find(b"filename"), ) + 4
-                end_of_image_name = base64_body.find(b"\r\n", base64_body.find(b"filename"), )
-                image_name = base64_body[base64_body.find(b"filename") + 10:end_of_image_name]
-                end = base64_body.find(b"\r\n--", start, )
-                request_body = base64_body[:start] + image_name + base64_body[end:]
-                new_request.body = base64.b64encode(request_body).decode("utf-8")
+        # if new_request.body is not None:
+        #     # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", base64.b64decode(Request.from_prepared_request(response.request).body))
+        #     base64_body = base64.b64decode(Request.from_prepared_request(response.request).body)
+        #     if b"filename" in base64_body:
+        #         start = base64_body.find(b"\r\n\r\n", base64_body.find(b"filename"), ) + 4
+        #         end_of_image_name = base64_body.find(b"\r\n", base64_body.find(b"filename"), )
+        #         image_name = base64_body[base64_body.find(b"filename") + 10:end_of_image_name]
+        #         end = base64_body.find(b"\r\n--", start, )
+        #         request_body = base64_body[:start] + image_name + base64_body[end:]
+        #         new_request.body = base64.b64encode(request_body).decode("utf-8")
         return cls(
             request=new_request,
             response=Response.from_requests(response),
