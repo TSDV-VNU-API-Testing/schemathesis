@@ -1,28 +1,29 @@
 from __future__ import annotations
+
 import base64
 import os
 import platform
 import shutil
 import textwrap
 import time
+from importlib import metadata
 from itertools import groupby
 from queue import Queue
 from typing import Any, Generator, cast
 
 import click
-from importlib import metadata
 
 from ... import service
 from ...code_samples import CodeSampleStyle
 from ...constants import (
     DISCORD_LINK,
+    FALSE_VALUES,
     FLAKY_FAILURE_MESSAGE,
+    GITHUB_APP_LINK,
+    ISSUE_TRACKER_URL,
     REPORT_SUGGESTION_ENV_VAR,
     SCHEMATHESIS_TEST_CASE_HEADER,
     SCHEMATHESIS_VERSION,
-    FALSE_VALUES,
-    ISSUE_TRACKER_URL,
-    GITHUB_APP_LINK,
 )
 from ...exceptions import RuntimeErrorType, prepare_response_payload
 from ...experimental import GLOBAL_EXPERIMENTS
@@ -30,14 +31,14 @@ from ...models import Status
 from ...runner import events
 from ...runner.events import InternalErrorType, SchemaErrorType
 from ...runner.serialization import (
+    SerializedCheck,
     SerializedError,
     SerializedTestResult,
     deduplicate_failures,
-    SerializedCheck,
 )
+from ...specs.openapi._vas import logger
 from ..context import ExecutionContext, FileReportContext, ServiceReportContext
 from ..handlers import EventHandler
-from ...specs.openapi._vas import logger
 
 SPINNER_REPETITION_NUMBER = 10
 
@@ -532,7 +533,7 @@ def display_service_unauthorized(hostname: str) -> None:
 
 def display_service_error(event: service.Error, message_prefix: str = "") -> None:
     """Show information about an error during communication with Schemathesis.io."""
-    from requests import RequestException, HTTPError, Response
+    from requests import HTTPError, RequestException, Response
 
     if isinstance(event.exception, HTTPError):
         response = cast(Response, event.exception.response)

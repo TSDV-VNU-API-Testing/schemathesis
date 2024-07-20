@@ -410,7 +410,7 @@ class Case:
             "deps/schemathesis/src/schemathesis/models.py -> new extra: %s", new_extra
         )
 
-        additional_headers = extra.pop("headers", None)
+        additional_headers = new_extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -1062,7 +1062,10 @@ class Request:
     @classmethod
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s", prepared.body)
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s",
+            prepared.body,
+        )
         body = prepared.body
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
@@ -1175,9 +1178,15 @@ class Interaction:
         status: Status,
         checks: list[Check],
     ) -> Interaction:
-        
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> response.request.body: %s", response.request.body)
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s", case.body)
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> response.request.body: %s",
+            response.request.body,
+        )
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s",
+            case.body,
+        )
         # new_request: Request = Request.from_prepared_request(response.request)
         # if case.metadata is not None and new_request.body is not None:
         #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> request.body: %s", base64.b64decode(new_request.body))
@@ -1187,7 +1196,7 @@ class Interaction:
         #             case.body[key] = case.metadata[key]["image_name"]
         #             logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", case.body)
         #             new_request.body = base64.b64encode(str(case.body).encode("utf-8")).decode("utf-8")
-        
+
         # Remove image data from the request body and replace it with the image name
         # if new_request.body is not None:
         #     # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", base64.b64decode(Request.from_prepared_request(response.request).body))
