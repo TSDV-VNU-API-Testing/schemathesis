@@ -3,6 +3,7 @@ import random
 import sys
 from functools import partial
 
+from dotenv import dotenv_values as get_dotenv_values
 from hypothesis import strategies as st
 
 # from faker import Faker
@@ -30,7 +31,9 @@ from hypothesis import strategies as st
 # from faker_file.providers.zip_file import ZipFileProvider
 
 
-DEV = True
+dotenv_values = get_dotenv_values(".env")
+PYTHON_ENV = dotenv_values.get("PYTHON_ENV", None)
+DEV = PYTHON_ENV != "PROD"
 
 # FAKER = Faker()
 
