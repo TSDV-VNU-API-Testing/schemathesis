@@ -792,15 +792,15 @@ def _network_test(
     run_targets(targets, context)
     status = Status.success
     try:
-        #logger.debug("kwargs in core.py: %s", kwargs)
+        # logger.debug("kwargs in core.py: %s", kwargs)
         requests_kwargs = case.as_requests_kwargs(
             base_url=case.get_full_base_url(), headers=headers
         )
         if 'files' in requests_kwargs:
-            existing_tuple = requests_kwargs['files'][0]
+            # existing_tuple = requests_kwargs['files'][0]
             #logger.debug("existing tuple in kwargs in core.py: %s", existing_tuple)
 
-            if case.metadata is not None:
+            if case.metadata != {}:
                 for i, (key, value) in enumerate(requests_kwargs['files']):
                     # Check if the key is in metadata
                     if key in case.metadata:
@@ -817,11 +817,15 @@ def _network_test(
         # requests_kwargs['files'][0][1] = case.metadata['image_name']
             #logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
         #logger.debug("request_kargs in core.py: %s", requests_kwargs)
-        old_content_length = response.request.headers.get('Content-Length', '0')
-        #logger.debug("old request content length in core.py: %s", old_content_length)
+        ### Create new request but reserve old content length
+            # old_content_length = response.request.headers.get('Content-Length')
+            # #logger.debug("old request content length in core.py: %s", old_content_length)
+            # request = requests.Request(**requests_kwargs).prepare()
+            # #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
+            # request.headers['Content-Length'] = old_content_length # type: ignore
+
+        ### Create new request with new content length
         request = requests.Request(**requests_kwargs).prepare()
-        #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
-        request.headers['Content-Length'] = old_content_length # type: ignore
         #logger.debug("new request content length in core.py: %s", request.headers.get('Content-Length'))
         response.request = request
         #logger.debug("case in core.py: %s", case.body)

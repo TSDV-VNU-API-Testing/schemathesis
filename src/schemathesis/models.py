@@ -352,17 +352,24 @@ class Case:
 
         if isinstance(self.body, dict):
             # Create a new body without meta-data
-            # new_body = {
-            #     key: value
-            #     for key, value in self.body.items()
-            #     if not key.startswith(VAS_KEY_PREFIX)
-            # }
+            body_without_prefixed_field = {
+                key: value
+                for key, value in self.body.items()
+                if not key.startswith(VAS_KEY_PREFIX)
+            }
             self.metadata = {
                 f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
                 for key, value in self.body.items()
                 if key.startswith(VAS_KEY_PREFIX)
             }
-            # self.body = new_body
+            new_body = {
+                **body_without_prefixed_field,
+                **{
+                    k: obj["image_name"]
+                    for k, obj in self.metadata.items()
+                }
+            }
+            self.body = new_body
 
             logger.debug(
                 "deps/schemathesis/src/schemathesis/models.py: new body: %s", self.body
@@ -411,6 +418,7 @@ class Case:
         )
 
         additional_headers = new_extra.pop("headers", None)
+        # additional_headers = extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -422,6 +430,7 @@ class Case:
             "headers": final_headers,
             "params": self.query,
             **new_extra,
+            # **extra,
         }
 
     def call(
@@ -864,6 +873,7 @@ class APIOperation(Generic[P, C]):
     ) -> st.SearchStrategy:
         """Turn this API operation into a Hypothesis strategy."""
 
+        logger.debug("deps/schemathesis/src/schemathesis/models.py: as_strategy -> kwargs: %s", kwargs)
         # Cai nay quan trong cuc ki
         strategy = self.schema.get_case_strategy(
             self,
@@ -1187,27 +1197,6 @@ class Interaction:
             "deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s",
             case.body,
         )
-        # new_request: Request = Request.from_prepared_request(response.request)
-        # if case.metadata is not None and new_request.body is not None:
-        #     logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> request.body: %s", base64.b64decode(new_request.body))
-        #     for key in case.metadata:
-        #         if isinstance(case.body, dict) and key in case.body:
-        #             logger.debug("")
-        #             case.body[key] = case.metadata[key]["image_name"]
-        #             logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", case.body)
-        #             new_request.body = base64.b64encode(str(case.body).encode("utf-8")).decode("utf-8")
-
-        # Remove image data from the request body and replace it with the image name
-        # if new_request.body is not None:
-        #     # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> %s", base64.b64decode(Request.from_prepared_request(response.request).body))
-        #     base64_body = base64.b64decode(Request.from_prepared_request(response.request).body)
-        #     if b"filename" in base64_body:
-        #         start = base64_body.find(b"\r\n\r\n", base64_body.find(b"filename"), ) + 4
-        #         end_of_image_name = base64_body.find(b"\r\n", base64_body.find(b"filename"), )
-        #         image_name = base64_body[base64_body.find(b"filename") + 10:end_of_image_name]
-        #         end = base64_body.find(b"\r\n--", start, )
-        #         request_body = base64_body[:start] + image_name + base64_body[end:]
-        #         new_request.body = base64.b64encode(request_body).decode("utf-8")
         return cls(
             request=Request.from_prepared_request(response.request),
             response=Response.from_requests(response),
