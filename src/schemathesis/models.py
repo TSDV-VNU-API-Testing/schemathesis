@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import inspect
 import textwrap
@@ -9,8 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import lru_cache, partial
 from itertools import chain, count
-from logging import Logger, LogRecord
-from math import e
+from logging import LogRecord
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -127,6 +127,7 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
         if key in get_request_signature().parameters
     }
     request = requests.Request(**kwargs).prepare()
+    # logger.debug("in prepare request data ", request.body)
     return PreparedRequestData(
         method=str(request.method),
         url=str(request.url),
@@ -351,15 +352,23 @@ class Case:
 
         if isinstance(self.body, dict):
             # Create a new body without meta-data
-            new_body = {
+            body_without_prefixed_field = {
                 key: value
                 for key, value in self.body.items()
                 if not key.startswith(VAS_KEY_PREFIX)
             }
-            self.metadata = {
-                f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
-                for key, value in self.body.items()
-                if key.startswith(VAS_KEY_PREFIX)
+            if self.metadata == {}:
+                self.metadata = {
+                    f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
+                    for key, value in self.body.items()
+                    if key.startswith(VAS_KEY_PREFIX)
+                }
+            new_body = {
+                **body_without_prefixed_field,
+                **{
+                    k: obj["image_name"]
+                    for k, obj in self.metadata.items()
+                }
             }
             self.body = new_body
 
@@ -409,7 +418,8 @@ class Case:
             "deps/schemathesis/src/schemathesis/models.py -> new extra: %s", new_extra
         )
 
-        additional_headers = extra.pop("headers", None)
+        additional_headers = new_extra.pop("headers", None)
+        # additional_headers = extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -421,6 +431,7 @@ class Case:
             "headers": final_headers,
             "params": self.query,
             **new_extra,
+            # **extra,
         }
 
     def call(
@@ -863,6 +874,7 @@ class APIOperation(Generic[P, C]):
     ) -> st.SearchStrategy:
         """Turn this API operation into a Hypothesis strategy."""
 
+        logger.debug("deps/schemathesis/src/schemathesis/models.py: as_strategy -> kwargs: %s", kwargs)
         # Cai nay quan trong cuc ki
         strategy = self.schema.get_case_strategy(
             self,
@@ -1054,12 +1066,17 @@ class Request:
         base_url = case.get_full_base_url()
         kwargs = case.as_requests_kwargs(base_url)
         request = requests.Request(**kwargs)
+        # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_case in Request -> request: %s", request)
         prepared = session.prepare_request(request)
         return cls.from_prepared_request(prepared)
 
     @classmethod
     def from_prepared_request(cls, prepared: requests.PreparedRequest) -> Request:
         """A prepared request version is already stored in `requests.Response`."""
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_prepared_request in Request -> body: %s",
+            prepared.body,
+        )
         body = prepared.body
         if isinstance(body, str):
             # can be a string for `application/x-www-form-urlencoded`
@@ -1172,6 +1189,15 @@ class Interaction:
         status: Status,
         checks: list[Check],
     ) -> Interaction:
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> response.request.body: %s",
+            response.request.body,
+        )
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: from_requests in Interaction -> case.body: %s",
+            case.body,
+        )
         return cls(
             request=Request.from_prepared_request(response.request),
             response=Response.from_requests(response),
@@ -1198,6 +1224,7 @@ class Interaction:
         session = requests.Session()
         session.headers.update(headers)
         return cls(
+            case=case,
             request=Request.from_case(case, session),
             response=Response.from_wsgi(response, elapsed),
             status=status,

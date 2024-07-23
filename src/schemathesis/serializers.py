@@ -81,9 +81,6 @@ class Serializer(Protocol):
     """
 
     def as_requests(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/serializers.py: Serializing body"
-        )
         raise NotImplementedError
 
     def as_werkzeug(self, context: SerializerContext, payload: Any) -> dict[str, Any]:
@@ -256,6 +253,7 @@ class MultipartSerializer:
             value = fast_deepcopy(value)
             multipart = _prepare_form_data(value)
             files, data = context.case.operation.prepare_multipart(multipart)
+            # logger.debug("deps/schemathesis/src/schemathesis/serializers.py: files: %s", files)
             return {"files": files, "data": data}
         # Uncommon schema. For example - `{"type": "string"}`
         boundary = choose_boundary()

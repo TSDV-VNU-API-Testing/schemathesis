@@ -1115,7 +1115,6 @@ class OpenApi30(SwaggerV20):
         scopes, definition = self.resolver.resolve_in_scope(
             fast_deepcopy(definition), scope
         )
-        logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/schemas.py: get_response_schema -> ")
         options = iter(definition.get("content", {}).values())
         option = next(options, None)
         # "schema" is an optional key in the `MediaType` object

@@ -3,8 +3,8 @@
 They all consist of primitive types and don't have references to schemas, app, etc.
 """
 from __future__ import annotations
-
 import logging
+from ..specs.openapi._vas import logger
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -367,6 +367,7 @@ class SerializedInteraction:
 
     @classmethod
     def from_interaction(cls, interaction: Interaction) -> SerializedInteraction:
+        # logger.debug("deps/schemathesis/src/schemathesis/runner/serialization.py: serializing interaction")
         return cls(
             request=interaction.request,
             response=interaction.response,
