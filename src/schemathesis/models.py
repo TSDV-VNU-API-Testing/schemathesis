@@ -357,11 +357,12 @@ class Case:
                 for key, value in self.body.items()
                 if not key.startswith(VAS_KEY_PREFIX)
             }
-            self.metadata = {
-                f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
-                for key, value in self.body.items()
-                if key.startswith(VAS_KEY_PREFIX)
-            }
+            if self.metadata == {}:
+                self.metadata = {
+                    f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
+                    for key, value in self.body.items()
+                    if key.startswith(VAS_KEY_PREFIX)
+                }
             new_body = {
                 **body_without_prefixed_field,
                 **{

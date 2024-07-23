@@ -818,14 +818,14 @@ def _network_test(
             #logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
         #logger.debug("request_kargs in core.py: %s", requests_kwargs)
         ### Create new request but reserve old content length
-            # old_content_length = response.request.headers.get('Content-Length')
-            # #logger.debug("old request content length in core.py: %s", old_content_length)
-            # request = requests.Request(**requests_kwargs).prepare()
-            # #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
-            # request.headers['Content-Length'] = old_content_length # type: ignore
+        old_content_length = response.request.headers.get('Content-Length', '0')
+        #logger.debug("old request content length in core.py: %s", old_content_length)
+        request = requests.Request(**requests_kwargs).prepare()
+        #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
+        request.headers['Content-Length'] = old_content_length # type: ignore
 
         ### Create new request with new content length
-        request = requests.Request(**requests_kwargs).prepare()
+        # request = requests.Request(**requests_kwargs).prepare()
         #logger.debug("new request content length in core.py: %s", request.headers.get('Content-Length'))
         response.request = request
         #logger.debug("case in core.py: %s", case.body)
