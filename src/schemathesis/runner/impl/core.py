@@ -54,13 +54,14 @@ from ...models import (
 )
 from ...runner import events
 from ...schemas import BaseSchema
+from ...specs.openapi._vas import logger
 from ...stateful import Feedback, Stateful
 from ...targets import Target, TargetContext
 from ...types import RawAuth, RequestCert
 from ...utils import capture_hypothesis_output
 from ..override import CaseOverride
 from ..serialization import SerializedTestResult
-from ...specs.openapi._vas import logger
+
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse, WSGIResponse
 
@@ -816,7 +817,7 @@ def _network_test(
         # requests_kwargs['files'][0][1] = case.metadata['image_name']
             #logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
         #logger.debug("request_kargs in core.py: %s", requests_kwargs)
-        old_content_length = response.request.headers.get('Content-Length')
+        old_content_length = response.request.headers.get('Content-Length', '0')
         #logger.debug("old request content length in core.py: %s", old_content_length)
         request = requests.Request(**requests_kwargs).prepare()
         #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
