@@ -4,6 +4,7 @@ import enum
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Generator
+from venv import logger
 
 from .. import GenerationConfig
 from ..constants import NOT_SET
@@ -32,6 +33,7 @@ class ParsedData:
     """
 
     original_case: Case
+    prev_case_id: str | None
     parameters: dict[str, Any]
     body: Any = NOT_SET
 
@@ -92,12 +94,17 @@ class Feedback:
 
     def add_test_case(self, case: Case, response: GenericResponse) -> None:
         """Store test data to reuse it in the future additional tests."""
+        logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Storing feedback for %r", case)
         for stateful_test in case.operation.get_stateful_tests(response, self.stateful):
+            logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Adding stateful test %r", stateful_test)
             data = self.stateful_tests.setdefault(
                 stateful_test.name, StatefulData(stateful_test)
             )
             data.store(case, response)
+            logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Stored feedback for %r", case)
         self.original_case = case
+        self.original_case.case_id = case.case_id
+        logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Original case %r", self.original_case.case_id)
 
     def get_stateful_tests(
         self,
@@ -115,13 +122,18 @@ class Feedback:
         from .._hypothesis import create_test
 
         for data in self.stateful_tests.values():
+            logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Data in stateful test lists %r", data)
             # Có thể phát triển thêm ở đây, chọn case như nào để stateful, hay số lượng case để stateful
             for parsed_data in data.container:
+                logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Parsed data %r", parsed_data)
                 stateful_data = StatefulData(
                     stateful_test=data.stateful_test, container=[parsed_data]
                 )
-
+                logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Stateful data %r", stateful_data)
                 operation = stateful_data.make_operation()
+                logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Operation %r", operation)
+                logger.debug("deps/schemathesis/src/schemathesis/stateful/__init__.py Previous testcase %r", parsed_data.prev_case_id)
+                self.original_case.case_id = parsed_data.prev_case_id
                 _as_strategy_kwargs: dict[str, Any] | None
                 if callable(as_strategy_kwargs):
                     _as_strategy_kwargs = as_strategy_kwargs(operation)
@@ -135,6 +147,7 @@ class Feedback:
                     data_generation_methods=operation.schema.data_generation_methods,
                     generation_config=generation_config,
                     as_strategy_kwargs=_as_strategy_kwargs,
+                    prev_stateful_case=self.original_case,
                 )
                 yield Ok((operation, test_function))
 
