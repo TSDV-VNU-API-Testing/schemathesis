@@ -19,6 +19,7 @@ from ...stateful import ParsedData, StatefulTest, UnresolvableLink
 from ...stateful.state_machine import Direction
 from ...types import NotSet
 from . import expressions
+from ._vas import logger
 from .constants import LOCATION_TO_CONTAINER
 from .parameters import OpenAPI20Body, OpenAPI30Body, OpenAPIParameter
 from .references import RECURSION_DEPTH_LIMIT, Unresolvable
@@ -123,7 +124,10 @@ class Link(StatefulTest):
         for location, parameters in containers.items():
             for parameter_data in parameters.values():
                 parameter = parameter_data["parameter"]
-                logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/links.py Parameter: %s", parameter)
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Parameter: %s",
+                    parameter,
+                )
                 if parameter_data["options"]:
                     definition = fast_deepcopy(parameter.definition)
                     if "schema" in definition:
@@ -151,7 +155,10 @@ class Link(StatefulTest):
                     # No options were gathered for this parameter - use the original one
                     components[LOCATION_TO_CONTAINER[location]].add(parameter)
 
-                logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/links.py Components: %s", components)
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Components: %s",
+                    components,
+                )
         return self.operation.clone(**components)
 
     def _get_container_by_parameter_name(
