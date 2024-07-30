@@ -185,7 +185,7 @@ def worker(
                 encoding = response.encoding or "utf8"
                 string = _safe_decode(response.body, encoding)
                 output.write(
-                    f"""    
+                    f"""
     body:
       encoding: '{encoding}'
       string: """
@@ -207,7 +207,7 @@ http_interactions:"""
                 stream.write(
                     f"""\n- id: '{current_id}'
   interaction_id: '{interaction.case.case_id}'
-  prev_id: '{interaction.case.prev_stateful_case.case_id if interaction.case.prev_stateful_case is not None else "None" }'
+  prev_id: '{interaction.case.prev_stateful_case.case_id if interaction.case.prev_stateful_case is not None else '' }'
   status: '{status}'
   seed: '{item.seed}'
   thread_id: {item.thread_id}

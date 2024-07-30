@@ -2,12 +2,12 @@
 
 Based on https://swagger.io/docs/specification/links/
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any, Generator, NoReturn, Sequence, Union
-from venv import logger
 
 from ...constants import NOT_SET
 from ...internal.copy import fast_deepcopy
@@ -17,6 +17,7 @@ from ...stateful import ParsedData, StatefulTest
 from ...stateful.state_machine import Direction
 from ...types import NotSet
 from . import expressions
+from ._vas import logger
 from .constants import LOCATION_TO_CONTAINER
 from .parameters import OpenAPI20Body, OpenAPI30Body, OpenAPIParameter
 
@@ -110,7 +111,10 @@ class Link(StatefulTest):
         for location, parameters in containers.items():
             for parameter_data in parameters.values():
                 parameter = parameter_data["parameter"]
-                logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/links.py Parameter: %s", parameter)
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Parameter: %s",
+                    parameter,
+                )
                 if parameter_data["options"]:
                     definition = fast_deepcopy(parameter.definition)
                     if "schema" in definition:
@@ -138,7 +142,10 @@ class Link(StatefulTest):
                     # No options were gathered for this parameter - use the original one
                     components[LOCATION_TO_CONTAINER[location]].add(parameter)
 
-                logger.debug("deps/schemathesis/src/schemathesis/specs/openapi/links.py Components: %s", components)
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Components: %s",
+                    components,
+                )
         return self.operation.clone(**components)
 
     def _get_container_by_parameter_name(

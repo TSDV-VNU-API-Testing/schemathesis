@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List
 
@@ -9,8 +10,8 @@ from ..links import OpenAPILink, get_all_links
 from ..utils import expand_status_code
 
 if TYPE_CHECKING:
-    from ....stateful.state_machine import StepResult
     from ....models import APIOperation
+    from ....stateful.state_machine import StepResult
 
 FilterFunction = Callable[["StepResult"], bool]
 
@@ -36,7 +37,9 @@ def apply(
         strategy = bundles[operation.path][operation.method.upper()].filter(
             make_response_filter(status_code, all_status_codes)
         )
-        connection = Connection(source=operation.verbose_name, strategy=_convert_strategy(strategy, link))
+        connection = Connection(
+            source=operation.verbose_name, strategy=_convert_strategy(strategy, link)
+        )
         connections[target_operation.verbose_name].append(connection)
 
 
@@ -47,7 +50,9 @@ def _convert_strategy(
     return strategy.map(lambda out: (out, link))
 
 
-def make_response_filter(status_code: str, all_status_codes: list[str]) -> FilterFunction:
+def make_response_filter(
+    status_code: str, all_status_codes: list[str]
+) -> FilterFunction:
     """Create a filter for stored responses.
 
     This filter will decide whether some response is suitable to use as a source for requesting some API operation.
@@ -83,7 +88,10 @@ def default_status_code(status_codes: list[str]) -> FilterFunction:
     Therefore we need to match only responses that were not matched by other listed status codes.
     """
     expanded_status_codes = {
-        status_code for value in status_codes if value != "default" for status_code in expand_status_code(value)
+        status_code
+        for value in status_codes
+        if value != "default"
+        for status_code in expand_status_code(value)
     }
 
     def match_default_response(result: StepResult) -> bool:
