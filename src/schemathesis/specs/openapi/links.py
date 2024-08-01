@@ -19,6 +19,7 @@ from ...stateful import ParsedData, StatefulTest, UnresolvableLink
 from ...stateful.state_machine import Direction
 from ...types import NotSet
 from . import expressions
+from ._vas import logger
 from .constants import LOCATION_TO_CONTAINER
 from .parameters import OpenAPI20Body, OpenAPI30Body, OpenAPIParameter
 from .references import RECURSION_DEPTH_LIMIT, Unresolvable
@@ -58,6 +59,9 @@ class Link(StatefulTest):
         else:
             operation = source_operation.schema.get_operation_by_reference(definition["operationRef"])  # type: ignore
         extension = definition.get(SCHEMATHESIS_LINK_EXTENSION)
+        logger.debug(f"from_definition -> Link source operation: {source_operation}")
+        logger.debug(f"from_definition -> Link target operation: {operation}")
+        logger.debug(f"from_definition -> Link definition: {definition}")
         return cls(
             # Pylint can't detect that the API operation is always defined at this point
             # E.g. if there is no matching operation or no operations at all, then a ValueError will be risen
@@ -88,6 +92,7 @@ class Link(StatefulTest):
             body = merge_body(case.body, body)
         return ParsedData(
             original_case=case,
+            prev_case_id=case.case_id,
             parameters=parameters,
             body=body,
         )
@@ -118,6 +123,10 @@ class Link(StatefulTest):
         for location, parameters in containers.items():
             for parameter_data in parameters.values():
                 parameter = parameter_data["parameter"]
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Parameter: %s",
+                    parameter,
+                )
                 if parameter_data["options"]:
                     definition = fast_deepcopy(parameter.definition)
                     if "schema" in definition:
@@ -144,6 +153,11 @@ class Link(StatefulTest):
                 else:
                     # No options were gathered for this parameter - use the original one
                     components[LOCATION_TO_CONTAINER[location]].add(parameter)
+
+                logger.debug(
+                    "deps/schemathesis/src/schemathesis/specs/openapi/links.py Components: %s",
+                    components,
+                )
         return self.operation.clone(**components)
 
     def _get_container_by_parameter_name(
@@ -189,6 +203,7 @@ def get_links(
     else:
         response_definition = responses.get("default", {})
     links = response_definition.get(field, {})
+    logger.debug(f"Links found: {links}")
     return [
         Link.from_definition(name, definition, operation)
         for name, definition in links.items()
