@@ -14,6 +14,7 @@ from .._dependency_versions import IS_WERKZEUG_ABOVE_3
 from ..constants import DEFAULT_RESPONSE_TIMEOUT, NOT_SET
 from ..exceptions import get_timeout_error
 from ..serializers import SerializerContext
+from ..specs.openapi._vas import VAS_KEY_PREFIX, logger
 from ..types import Cookies, NotSet, RequestCert
 from ..specs.openapi._vas import VAS_KEY_PREFIX, logger
 
@@ -106,11 +107,20 @@ class RequestsTransport:
             media_type = case.operation._get_default_media_type()
         else:
             media_type = case.media_type
-        if media_type and media_type != "multipart/form-data" and not isinstance(case.body, NotSet):
+        if (
+            media_type
+            and media_type != "multipart/form-data"
+            and not isinstance(case.body, NotSet)
+        ):
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in final_headers:
                 final_headers["Content-Type"] = media_type
-        logger.debug("deps/schemathesis/src/schemathesis/transports/__init__.py: RequestsTransport.serialize_case -> old body: %s", case.body)
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/transports/__init__.py: serialize_case -> old body: %s",
+            case.body,
+        )
+
         url = case._get_url(base_url)
         serializer = case._get_serializer(media_type)
 
@@ -220,7 +230,7 @@ class RequestsTransport:
             **new_extra,
             # **extra,
         }
-    
+
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
@@ -241,7 +251,9 @@ class RequestsTransport:
         import requests
         from urllib3.exceptions import ReadTimeoutError
 
-        data = self.serialize_case(case, base_url=base_url, headers=headers, params=params, cookies=cookies)
+        data = self.serialize_case(
+            case, base_url=base_url, headers=headers, params=params, cookies=cookies
+        )
         data.update(kwargs)
         data.setdefault("timeout", DEFAULT_RESPONSE_TIMEOUT / 1000)
         if session is None:
@@ -273,8 +285,12 @@ class RequestsTransport:
                 request = session.prepare_request(req)
             else:
                 request = cast(requests.PreparedRequest, exc.request)
-            timeout = 1000 * data["timeout"]  # It is defined and not empty, since the exception happened
-            code_message = case._get_code_message(case.operation.schema.code_sample_style, request, verify=verify)
+            timeout = (
+                1000 * data["timeout"]
+            )  # It is defined and not empty, since the exception happened
+            code_message = case._get_code_message(
+                case.operation.schema.code_sample_style, request, verify=verify
+            )
             message = f"The server failed to respond within the specified limit of {timeout:.2f}ms"
             raise get_timeout_error(case.operation.verbose_name, timeout)(
                 f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
@@ -337,7 +353,13 @@ class ASGITransport(RequestsTransport):
             base_url = case.get_full_base_url()
         with ASGIClient(self.app) as client:
             return super().send(
-                case, session=client, base_url=base_url, headers=headers, params=params, cookies=cookies, **kwargs
+                case,
+                session=client,
+                base_url=base_url,
+                headers=headers,
+                params=params,
+                cookies=cookies,
+                **kwargs,
             )
 
 
@@ -420,7 +442,9 @@ class WSGITransport:
 
 
 @contextmanager
-def cookie_handler(client: werkzeug.Client, cookies: Cookies | None) -> Generator[None, None, None]:
+def cookie_handler(
+    client: werkzeug.Client, cookies: Cookies | None
+) -> Generator[None, None, None]:
     """Set cookies required for a call."""
     if not cookies:
         yield
