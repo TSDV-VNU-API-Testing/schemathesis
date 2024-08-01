@@ -1,9 +1,10 @@
 """OpenAPI specific loader behavior."""
+
 import json
 from pathlib import Path
 
 import pytest
-from flask import Response, Flask
+from flask import Flask, Response
 
 import schemathesis
 from schemathesis.exceptions import SchemaError
@@ -13,20 +14,20 @@ from schemathesis.specs.openapi.loaders import NON_STRING_OBJECT_KEY_MESSAGE, SC
 from schemathesis.specs.openapi.schemas import OpenApi30, SwaggerV20
 
 
-def test_openapi_asgi_loader(fastapi_app, run_asgi_test):
+def test_openapi_asgi_loader(fastapi_app, run_test):
     # When an ASGI app is loaded via `from_asgi`
     schema = loaders.from_asgi("/openapi.json", fastapi_app, force_schema_version="30")
     strategy = schema["/users"]["GET"].as_strategy()
-    # Then it should successfully make calls via `call_asgi`
-    run_asgi_test(strategy)
+    # Then it should successfully make calls
+    run_test(strategy)
 
 
-def test_openapi_wsgi_loader(flask_app, run_wsgi_test):
+def test_openapi_wsgi_loader(flask_app, run_test):
     # When a WSGI app is loaded via `from_wsgi`
     schema = loaders.from_wsgi("/schema.yaml", flask_app)
     strategy = schema["/success"]["GET"].as_strategy()
-    # Then it should successfully make calls via `call_wsgi`
-    run_wsgi_test(strategy)
+    # Then it should successfully make calls
+    run_test(strategy)
 
 
 @pytest.mark.parametrize(
@@ -42,11 +43,15 @@ def test_force_open_api_version(version, schema, expected):
     assert isinstance(loaded, expected)
 
 
-def test_unsupported_openapi_version():
-    version = "3.1.0"
-    with pytest.raises(
-        SchemaError, match=f"The provided schema uses Open API {version}, which is currently not supported."
-    ):
+@pytest.mark.parametrize(
+    "version, expected",
+    (
+        ("3.1.0", "The provided schema uses Open API 3.1.0, which is currently not fully supported."),
+        ("3.2.0", "The provided schema uses Open API 3.2.0, which is currently not supported."),
+    ),
+)
+def test_unsupported_openapi_version(version, expected):
+    with pytest.raises(SchemaError, match=expected):
         loaders.from_dict({"openapi": version}, validate_schema=False)
 
 

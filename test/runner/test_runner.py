@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import base64
 import json
 import platform
@@ -16,17 +17,20 @@ from hypothesis import Phase
 from requests.auth import HTTPDigestAuth
 
 import schemathesis
+from schemathesis import experimental
 from schemathesis._hypothesis import add_examples
+from schemathesis._override import CaseOverride
 from schemathesis.checks import content_type_conformance, response_schema_conformance, status_code_conformance
-from schemathesis.generation import DataGenerationMethod
 from schemathesis.constants import RECURSIVE_REFERENCE_ERROR_MESSAGE, SCHEMATHESIS_TEST_CASE_HEADER, USER_AGENT
-from schemathesis.transports.auth import get_requests_auth
+from schemathesis.generation import DataGenerationMethod
 from schemathesis.models import Check, Status, TestResult
 from schemathesis.runner import events, from_schema
 from schemathesis.runner.impl import threadpool
-from schemathesis.runner.impl.core import get_wsgi_auth, has_too_many_responses_with_status, reraise
+from schemathesis.runner.impl.core import deduplicate_errors, has_too_many_responses_with_status
 from schemathesis.specs.graphql import loaders as gql_loaders
 from schemathesis.specs.openapi import loaders as oas_loaders
+from schemathesis.stateful import Stateful
+from schemathesis.transports.auth import get_requests_auth, get_wsgi_auth
 
 
 def execute(schema, **options) -> events.Finished:
@@ -130,6 +134,7 @@ def test_interactions(request, any_app_schema, workers):
         "uri": f"{base_url}/failure",
         "method": "GET",
         "body": None,
+        "body_size": None,
         "headers": {
             "Accept": ["*/*"],
             "Accept-Encoding": ["gzip, deflate"],
@@ -158,6 +163,7 @@ def test_interactions(request, any_app_schema, workers):
         "uri": f"{base_url}/success",
         "method": "GET",
         "body": None,
+        "body_size": None,
         "headers": {
             "Accept": ["*/*"],
             "Accept-Encoding": ["gzip, deflate"],
@@ -179,7 +185,7 @@ def test_interactions(request, any_app_schema, workers):
 @pytest.mark.operations("root")
 def test_asgi_interactions(fastapi_app):
     schema = oas_loaders.from_asgi("/openapi.json", fastapi_app, force_schema_version="30")
-    _, *ev, _ = from_schema(schema, store_interactions=True).execute()
+    _, _, _, _, _, *ev, _ = from_schema(schema, store_interactions=True).execute()
     interaction = ev[1].result.interactions[0]
     assert interaction.status == Status.success
     assert interaction.request.uri == "http://localhost/users"
@@ -249,6 +255,7 @@ def test_root_url():
         return {}
 
     def check(response, case):
+        assert case.as_transport_kwargs()["url"] == "/"
         assert case.as_requests_kwargs()["url"] == "/"
         assert response.status_code == 200
 
@@ -361,7 +368,7 @@ def test_headers_override(any_app_schema):
 def test_unknown_response_code(any_app_schema):
     # When API operation returns a status code, that is not listed in "responses"
     # And "status_code_conformance" is specified
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema,
         checks=(status_code_conformance,),
         hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
@@ -380,7 +387,7 @@ def test_unknown_response_code(any_app_schema):
 def test_unknown_response_code_with_default(any_app_schema):
     # When API operation returns a status code, that is not listed in "responses", but there is a "default" response
     # And "status_code_conformance" is specified
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema,
         checks=(status_code_conformance,),
         hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
@@ -396,7 +403,7 @@ def test_unknown_response_code_with_default(any_app_schema):
 def test_unknown_content_type(any_app_schema):
     # When API operation returns a response with content type, not specified in "produces"
     # And "content_type_conformance" is specified
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema,
         checks=(content_type_conformance,),
         hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
@@ -427,7 +434,7 @@ def test_known_content_type(any_app_schema):
 def test_response_conformance_invalid(any_app_schema):
     # When API operation returns a response that doesn't conform to the schema
     # And "response_schema_conformance" is specified
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema,
         checks=(response_schema_conformance,),
         hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
@@ -517,7 +524,7 @@ def test_response_conformance_text(any_app_schema):
 def test_response_conformance_malformed_json(any_app_schema):
     # When API operation returns a response that contains a malformed JSON, but has a valid content type header
     # And "response_schema_conformance" is specified
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema,
         checks=(response_schema_conformance,),
         hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
@@ -581,8 +588,7 @@ def test_internal_exceptions(any_app_schema, mocker):
     # When there is an exception during the test
     # And Hypothesis consider this test as a flaky one
     mocker.patch("schemathesis.Case.call", side_effect=ValueError)
-    mocker.patch("schemathesis.Case.call_wsgi", side_effect=ValueError)
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema, hypothesis_settings=hypothesis.settings(max_examples=3, deadline=None)
     ).execute()
     # Then the execution result should indicate errors
@@ -666,7 +672,7 @@ def test_invalid_path_parameter(schema_url):
 @pytest.mark.operations("missing_path_parameter")
 def test_missing_path_parameter(any_app_schema):
     # When a path parameter is missing
-    _, *others, finished = from_schema(
+    _, _, _, _, _, *others, finished = from_schema(
         any_app_schema, hypothesis_settings=hypothesis.settings(max_examples=3, deadline=None)
     ).execute()
     # Then it leads to an error
@@ -708,14 +714,6 @@ def test_workers_num_regression(mocker, real_app_schema):
     assert spy.call_args[1]["workers_num"] == 5
 
 
-def test_reraise(swagger_20):
-    try:
-        raise AssertionError("Foo")
-    except AssertionError:
-        error = reraise(swagger_20["/users"]["GET"])
-        assert error.args[0] == "Unknown schema error"
-
-
 @pytest.mark.parametrize("schema_path", ("petstore_v2.yaml", "petstore_v3.yaml"))
 def test_url_joining(request, server, get_schema_path, schema_path):
     if schema_path == "petstore_v2.yaml":
@@ -741,7 +739,14 @@ def test_skip_operations_with_recursive_references(schema_with_recursive_referen
     assert RECURSIVE_REFERENCE_ERROR_MESSAGE in after.result.errors[0].exception
 
 
-def test_unsatisfiable_example(empty_open_api_3_schema):
+@pytest.mark.parametrize(
+    "phases, expected, total_errors",
+    (
+        ([Phase.explicit, Phase.generate], "Failed to generate test cases for this API operation", 2),
+        ([Phase.explicit], "Failed to generate test cases from examples for this API operation", 1),
+    ),
+)
+def test_unsatisfiable_example(empty_open_api_3_schema, phases, expected, total_errors):
     # See GH-904
     # When filling missing properties during examples generation leads to unsatisfiable schemas
     empty_open_api_3_schema["paths"] = {
@@ -775,11 +780,147 @@ def test_unsatisfiable_example(empty_open_api_3_schema):
     # Then the testing process should not raise an internal error
     schema = oas_loaders.from_dict(empty_open_api_3_schema)
     *_, after, finished = from_schema(
-        schema, hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None)
+        schema, hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None, phases=phases)
     ).execute()
     # And the tests are failing because of the unsatisfiable schema
     assert finished.has_errors
-    assert "Failed to generate test cases for this API operation" in after.result.errors[0].exception
+    assert expected in after.result.errors[0].exception
+    assert len(after.result.errors) == total_errors
+
+
+@pytest.mark.parametrize(
+    "phases, expected",
+    (
+        ([Phase.explicit, Phase.generate], "Schemathesis can't serialize data to any of the defined media types"),
+        (
+            [Phase.explicit],
+            (
+                "Failed to generate test cases from examples for this API operation because of "
+                "unsupported payload media types"
+            ),
+        ),
+    ),
+)
+def test_non_serializable_example(empty_open_api_3_schema, phases, expected):
+    # When filling missing request body during examples generation leads to serialization error
+    empty_open_api_3_schema["paths"] = {
+        "/success": {
+            "post": {
+                "parameters": [
+                    {"name": "key", "in": "query", "required": True, "schema": {"type": "integer"}, "example": 42}
+                ],
+                "requestBody": {
+                    "content": {
+                        "image/jpeg": {
+                            "schema": {"format": "base64", "type": "string"},
+                        }
+                    }
+                },
+                "responses": {"200": {"description": "OK"}},
+            }
+        }
+    }
+    # Then the testing process should not raise an internal error
+    schema = oas_loaders.from_dict(empty_open_api_3_schema)
+    *_, after, finished = from_schema(
+        schema, hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None, phases=phases)
+    ).execute()
+    # And the tests are failing because of the serialization error
+    assert finished.has_errors
+    assert expected in after.result.errors[0].exception
+    assert len(after.result.errors) == 1
+
+
+@pytest.mark.parametrize(
+    "phases, expected",
+    (
+        (
+            [Phase.explicit, Phase.generate],
+            "Failed to generate test cases for this API operation because of "
+            r"unsupported regular expression `^[\w\s\-\/\pL,.#;:()']+$`",
+        ),
+        (
+            [Phase.explicit],
+            (
+                "Failed to generate test cases from examples for this API operation because of "
+                r"unsupported regular expression `^[\w\s\-\/\pL,.#;:()']+$`"
+            ),
+        ),
+    ),
+)
+def test_invalid_regex_example(empty_open_api_3_schema, phases, expected):
+    # When filling missing properties during examples generation contains invalid regex
+    empty_open_api_3_schema["paths"] = {
+        "/success": {
+            "post": {
+                "parameters": [
+                    {"name": "key", "in": "query", "required": True, "schema": {"type": "integer"}, "example": 42}
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "properties": {
+                                    "region": {
+                                        "nullable": True,
+                                        "pattern": "^[\\w\\s\\-\\/\\pL,.#;:()']+$",
+                                        "type": "string",
+                                    },
+                                },
+                                "required": ["region"],
+                                "type": "object",
+                            }
+                        }
+                    },
+                    "required": True,
+                },
+                "responses": {"200": {"description": "OK"}},
+            }
+        }
+    }
+    # Then the testing process should not raise an internal error
+    schema = oas_loaders.from_dict(empty_open_api_3_schema)
+    *_, after, finished = from_schema(
+        schema,
+        hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None, phases=phases),
+    ).execute()
+    # And the tests are failing because of the invalid regex error
+    assert finished.has_errors
+    assert expected in after.result.errors[0].exception
+    assert len(after.result.errors) == 1
+
+
+def test_invalid_header_in_example(empty_open_api_3_schema):
+    empty_open_api_3_schema["paths"] = {
+        "/success": {
+            "post": {
+                "parameters": [
+                    {
+                        "name": "SESSION",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "integer"},
+                        "example": "test\ntest",
+                    }
+                ],
+                "responses": {"200": {"description": "OK"}},
+            }
+        }
+    }
+    # Then the testing process should not raise an internal error
+    schema = oas_loaders.from_dict(empty_open_api_3_schema)
+    *_, after, finished = from_schema(
+        schema,
+        hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
+        dry_run=True,
+    ).execute()
+    # And the tests are failing
+    assert finished.has_errors
+    assert (
+        "Failed to generate test cases from examples for this API operation because of some header examples are invalid"
+        in after.result.errors[0].exception
+    )
+    assert len(after.result.errors) == 1
 
 
 @pytest.mark.operations("success")
@@ -809,6 +950,19 @@ def test_dry_run_asgi(fastapi_app):
     execute(schema, checks=(check,), dry_run=True)
     # Then no requests should be sent & no responses checked
     assert not called
+
+
+def test_connection_error(empty_open_api_3_schema):
+    empty_open_api_3_schema["paths"] = {"/success": {"post": {"responses": {"200": {"description": "OK"}}}}}
+    schema = oas_loaders.from_dict(empty_open_api_3_schema, base_url="http://127.0.0.1:1")
+    *_, after, finished = from_schema(
+        schema,
+        hypothesis_settings=hypothesis.settings(max_examples=1, deadline=None),
+    ).execute()
+    # And the tests are failing
+    assert finished.has_errors
+    assert "Max retries exceeded with url" in after.result.errors[0].exception
+    assert len(after.result.errors) == 1
 
 
 @pytest.mark.operations("reserved")
@@ -913,7 +1067,7 @@ def test_encoding_octet_stream(empty_open_api_3_schema, openapi3_base_url):
 
 def test_graphql(graphql_url):
     schema = gql_loaders.from_url(graphql_url)
-    initialized, *other, finished = list(
+    initialized, _, _, _, _, *other, finished = list(
         from_schema(schema, hypothesis_settings=hypothesis.settings(max_examples=5, deadline=None)).execute()
     )
     assert initialized.operations_count == 4
@@ -985,6 +1139,10 @@ def test_stop_event_stream_immediately(event_stream):
 
 def test_stop_event_stream_after_second_event(event_stream, workers_num, stop_worker):
     next(event_stream)
+    next(event_stream)
+    next(event_stream)
+    next(event_stream)
+    next(event_stream)
     assert isinstance(next(event_stream), events.BeforeExecution)
     event_stream.stop()
     assert isinstance(next(event_stream), events.Finished)
@@ -1013,24 +1171,29 @@ def test_case_mutation(real_app_schema):
         case.headers = {"Foo": "BAZ"}
         raise AssertionError("Baz!")
 
-    _, _, event, _ = from_schema(real_app_schema, checks=[check1, check2]).execute()
+    *_, event, _ = from_schema(real_app_schema, checks=[check1, check2]).execute()
     # Then these mutations should not interfere
     assert event.result.checks[0].example.headers["Foo"] == "BAR"
     assert event.result.checks[1].example.headers["Foo"] == "BAZ"
 
 
-def test_malformed_path_template(empty_open_api_3_schema):
+@pytest.mark.parametrize(
+    "path, expected",
+    (
+        ("/foo}/", "Single '}' encountered in format string"),
+        ("/{.format}/", "Replacement index 0 out of range for positional args tuple"),
+    ),
+)
+def test_malformed_path_template(empty_open_api_3_schema, path, expected):
     # When schema contains a malformed path template
-    path = "/foo}/"
     empty_open_api_3_schema["paths"] = {path: {"get": {"responses": {"200": {"description": "OK"}}}}}
     schema = schemathesis.from_dict(empty_open_api_3_schema)
     # Then it should not cause a fatal error
-    _, _, event, _ = list(from_schema(schema).execute())
+    *_, event, _ = list(from_schema(schema).execute())
     assert event.status == Status.error
     # And should produce the proper error message
     assert (
-        event.result.errors[0].exception == f"OperationSchemaError: Malformed path template: `{path}`\n\n  "
-        f"Single '}}' encountered in format string"
+        event.result.errors[0].exception == f"OperationSchemaError: Malformed path template: `{path}`\n\n  {expected}"
     )
 
 
@@ -1087,7 +1250,7 @@ def test_explicit_header_negative(empty_open_api_3_schema, parameters, expected)
     }
     empty_open_api_3_schema["components"] = {"securitySchemes": {"basicAuth": {"type": "http", "scheme": "basic"}}}
     schema = schemathesis.from_dict(empty_open_api_3_schema, data_generation_methods=DataGenerationMethod.negative)
-    _, _, event, finished = list(
+    *_, event, finished = list(
         from_schema(
             schema,
             headers={"Authorization": "TEST"},
@@ -1110,7 +1273,7 @@ def test_skip_non_negated_headers(empty_open_api_3_schema):
         }
     }
     schema = schemathesis.from_dict(empty_open_api_3_schema, data_generation_methods=DataGenerationMethod.negative)
-    _, _, event, finished = list(
+    *_, event, finished = list(
         from_schema(
             schema,
             dry_run=True,
@@ -1136,3 +1299,94 @@ def test_use_the_same_seed(empty_open_api_3_schema, derandomize):
     ]
     seed = after_execution[0].result.seed
     assert all(event.result.seed == seed for event in after_execution)
+
+
+def test_deduplicate_errors():
+    errors = [
+        requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=808): Max retries exceeded with url: /snapshots/uploads/%5Dw2y%C3%9D (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x795a23db4ce0>: Failed to establish a new connection: [Errno 111] Connection refused'))"
+        ),
+        requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=808): Max retries exceeded with url: /snapshots/uploads/%C3%8BEK (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x795a23e2a6c0>: Failed to establish a new connection: [Errno 111] Connection refused'))"
+        ),
+    ]
+    assert len(list(deduplicate_errors(errors))) == 1
+
+
+STATEFUL_KWARGS = {
+    "store_interactions": True,
+    "stateful": Stateful.links,
+    "hypothesis_settings": hypothesis.settings(max_examples=1, deadline=None, stateful_step_count=2),
+}
+
+
+@pytest.mark.openapi_version("3.0")
+@pytest.mark.operations("get_user", "create_user", "update_user")
+def test_stateful_auth(any_app_schema):
+    experimental.STATEFUL_TEST_RUNNER.enable()
+    experimental.STATEFUL_ONLY.enable()
+    _, *_, after_execution, _ = from_schema(any_app_schema, auth=("admin", "password"), **STATEFUL_KWARGS).execute()
+    interactions = after_execution.result.interactions
+    assert len(interactions) > 0
+    for interaction in interactions:
+        assert interaction.request.headers["Authorization"] == ["Basic YWRtaW46cGFzc3dvcmQ="]
+
+
+@pytest.mark.openapi_version("3.0")
+@pytest.mark.operations("get_user", "create_user", "update_user")
+def test_stateful_all_generation_methods(real_app_schema):
+    experimental.STATEFUL_TEST_RUNNER.enable()
+    experimental.STATEFUL_ONLY.enable()
+    method = DataGenerationMethod.negative
+    real_app_schema.data_generation_methods = [method]
+    _, *_, after_execution, _ = from_schema(real_app_schema, **STATEFUL_KWARGS).execute()
+    interactions = after_execution.result.interactions
+    assert len(interactions) > 0
+    for interaction in interactions:
+        for check in interaction.checks:
+            assert check.example.data_generation_method == method.as_short_name()
+
+
+@pytest.mark.openapi_version("3.0")
+@pytest.mark.operations("get_user", "create_user", "update_user")
+def test_stateful_seed(real_app_schema):
+    experimental.STATEFUL_TEST_RUNNER.enable()
+    experimental.STATEFUL_ONLY.enable()
+    requests = []
+    for _ in range(3):
+        _, *_, after_execution, _ = from_schema(real_app_schema, seed=42, **STATEFUL_KWARGS).execute()
+        current = []
+        for interaction in after_execution.result.interactions:
+            data = interaction.request.__dict__
+            del data["headers"][SCHEMATHESIS_TEST_CASE_HEADER]
+            current.append(data)
+        requests.append(current)
+    assert requests[0] == requests[1] == requests[2]
+
+
+@pytest.mark.openapi_version("3.0")
+@pytest.mark.operations("get_user", "create_user", "update_user")
+def test_stateful_override(real_app_schema):
+    experimental.STATEFUL_TEST_RUNNER.enable()
+    experimental.STATEFUL_ONLY.enable()
+    _, *_, after_execution, _ = from_schema(
+        real_app_schema,
+        override=CaseOverride(path_parameters={"user_id": "42"}, headers={}, query={}, cookies={}),
+        hypothesis_settings=hypothesis.settings(max_examples=40, deadline=None, stateful_step_count=2),
+        store_interactions=True,
+        stateful=Stateful.links,
+    ).execute()
+    interactions = after_execution.result.interactions
+    assert len(interactions) > 0
+    get_requests = [i.request for i in interactions if i.request.method == "GET"]
+    assert len(get_requests) > 0
+    for request in get_requests:
+        assert "/api/users/42?" in request.uri
+
+
+@pytest.mark.openapi_version("3.0")
+@pytest.mark.operations("failure", "get_user", "create_user", "update_user")
+def test_stateful_exit_first(real_app_schema):
+    experimental.STATEFUL_TEST_RUNNER.enable()
+    _, *ev, _ = from_schema(real_app_schema, exit_first=True, **STATEFUL_KWARGS).execute()
+    assert not any(isinstance(event, events.StatefulEvent) for event in ev)

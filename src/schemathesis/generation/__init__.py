@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Union
+from typing import TYPE_CHECKING, Iterable, Union
+
+if TYPE_CHECKING:
+    from hypothesis.strategies import SearchStrategy
 
 
 class DataGenerationMethod(str, Enum):
@@ -62,6 +65,13 @@ def generate_random_case_id(length: int = 6) -> str:
 
 
 @dataclass
+class HeaderConfig:
+    """Configuration for generating headers."""
+
+    strategy: SearchStrategy[str] | None = None
+
+
+@dataclass
 class GenerationConfig:
     """Holds various configuration options relevant for data generation."""
 
@@ -69,3 +79,7 @@ class GenerationConfig:
     allow_x00: bool = True
     # Generate strings using the given codec
     codec: str | None = "utf-8"
+    # Whether to generate security parameters
+    with_security_parameters: bool = True
+    # Header generation configuration
+    headers: HeaderConfig = field(default_factory=HeaderConfig)

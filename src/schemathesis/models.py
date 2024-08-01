@@ -29,12 +29,11 @@ from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
 
 from hypothesis.strategies._internal.core import binary
 
-from . import failures, serializers
+from . import serializers
 from ._dependency_versions import IS_WERKZEUG_ABOVE_3
 from .auths import AuthStorage
 from .code_samples import CodeSampleStyle
 from .constants import (
-    DEFAULT_RESPONSE_TIMEOUT,
     NOT_SET,
     SCHEMATHESIS_TEST_CASE_HEADER,
     SERIALIZERS_SUGGESTION_MESSAGE,
@@ -46,21 +45,28 @@ from .exceptions import (
     OperationSchemaError,
     SerializationNotPossible,
     SkipTest,
+    UsageError,
     deduplicate_failed_checks,
     get_grouped_exception,
     get_timeout_error,
-    maybe_set_assertion_message,
     prepare_response_payload,
 )
 from .generation import DataGenerationMethod, GenerationConfig, generate_random_case_id
 from .hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, dispatch
 from .internal.copy import fast_deepcopy
-from .internal.deprecation import deprecated_property
+from .internal.deprecation import deprecated_function, deprecated_property
+from .internal.output import prepare_response_payload
 from .parameters import Parameter, ParameterSet, PayloadAlternatives
 from .sanitization import sanitize_request, sanitize_response
-from .serializers import Serializer, SerializerContext
+from .serializers import Serializer
 from .specs.openapi._vas import VAS_KEY_PREFIX, logger
-from .transports import serialize_payload
+from .transports import (
+    ASGITransport,
+    RequestsTransport,
+    WSGITransport,
+    deserialize_payload,
+    serialize_payload,
+)
 from .types import Body, Cookies, FormData, Headers, NotSet, PathParameters, Query
 
 if TYPE_CHECKING:
@@ -136,13 +142,26 @@ def prepare_request_data(kwargs: dict[str, Any]) -> PreparedRequestData:
     )
 
 
+@dataclass
+class GenerationMetadata:
+    """Stores various information about how data is generated."""
+
+    query: DataGenerationMethod | None
+    path_parameters: DataGenerationMethod | None
+    headers: DataGenerationMethod | None
+    cookies: DataGenerationMethod | None
+    body: DataGenerationMethod | None
+
+    __slots__ = ("query", "path_parameters", "headers", "cookies", "body")
+
+
 @dataclass(repr=False)
 class Case:
     """A single test case parameters."""
 
-    _id_generator = count(1)
-
     operation: APIOperation
+    # Time spent on generation of this test case
+    generation_time: float
 
     # is_deepcopy_case:Optional[bool]= False
     case_id: Optional[int] = None
@@ -163,13 +182,11 @@ class Case:
     # Meta-data for image data
     metadata: dict[str, Any] = field(default_factory=lambda: {})
 
+    meta: GenerationMetadata | None = None
+
     # The way the case was generated (None for manually crafted ones)
     data_generation_method: DataGenerationMethod | None = None
     _auth: requests.auth.AuthBase | None = None
-
-    def __post_init__(self):
-        if not self.case_id:
-            self.case_id = next(Case._id_generator)
 
     def __repr__(self) -> str:
         parts = [f"{self.__class__.__name__}("]
@@ -187,7 +204,7 @@ class Case:
     def __hash__(self) -> int:
         return hash(self.as_curl_command({SCHEMATHESIS_TEST_CASE_HEADER: "0"}))
 
-    @deprecated_property(removed_in="4.0", replacement="operation")
+    @deprecated_property(removed_in="4.0", replacement="`operation`")
     def endpoint(self) -> APIOperation:
         return self.operation
 
@@ -223,7 +240,7 @@ class Case:
             # in the parameters list.
             # When `exc` is formatted, it is the missing key name in quotes. E.g. 'id'
             raise OperationSchemaError(f"Path parameter {exc} is not defined") from exc
-        except ValueError as exc:
+        except (IndexError, ValueError) as exc:
             # A single unmatched `}` inside the path template may cause this
             raise OperationSchemaError(
                 f"Malformed path template: `{self.path}`\n\n  {exc}"
@@ -241,7 +258,9 @@ class Case:
         self, headers: dict[str, Any] | None
     ) -> PreparedRequestData:
         base_url = self.get_full_base_url()
-        kwargs = self.as_requests_kwargs(base_url, headers=headers)
+        kwargs = RequestsTransport().serialize_case(
+            self, base_url=base_url, headers=headers
+        )
         return prepare_request_data(kwargs)
 
     def get_code_to_reproduce(
@@ -310,129 +329,39 @@ class Case:
         final_headers.setdefault(SCHEMATHESIS_TEST_CASE_HEADER, self.id)
         return final_headers
 
-    def _get_serializer(self) -> Serializer | None:
+    def _get_serializer(self, media_type: str | None = None) -> Serializer | None:
         """Get a serializer for the payload, if there is any."""
-        if self.media_type is not None:
-            media_type = serializers.get_first_matching_media_type(self.media_type)
+        input_media_type = media_type or self.media_type
+        if input_media_type is not None:
+            media_type = serializers.get_first_matching_media_type(input_media_type)
             if media_type is None:
                 # This media type is set manually. Otherwise, it should have been rejected during the data generation
-                raise SerializationNotPossible.for_media_type(self.media_type)
+                raise SerializationNotPossible.for_media_type(input_media_type)
             # SAFETY: It is safe to assume that serializer will be found, because `media_type` returned above
             # is registered. This intentionally ignores cases with concurrent serializers registry modification.
             cls = cast(Type[serializers.Serializer], serializers.get(media_type))
             return cls()
         return None
 
+    def _get_body(self) -> Body | NotSet:
+        return self.body
+
+    @deprecated_function(removed_in="4.0", replacement="Case.as_transport_kwargs")
     def as_requests_kwargs(
         self, base_url: str | None = None, headers: dict[str, str] | None = None
     ) -> dict[str, Any]:
         """Convert the case into a dictionary acceptable by requests."""
-        final_headers = self._get_headers(headers)
-        if (
-            self.media_type
-            and self.media_type != "multipart/form-data"
-            and not isinstance(self.body, NotSet)
-        ):
-            # `requests` will handle multipart form headers with the proper `boundary` value.
-            if "content-type" not in {header.lower() for header in final_headers}:
-                final_headers["Content-Type"] = self.media_type
-
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py: as_requests_kwargs -> old body: %s",
-            self.body,
+        return RequestsTransport().serialize_case(
+            self, base_url=base_url, headers=headers
         )
 
-        base_url = self._get_base_url(base_url)
-        formatted_path = self.formatted_path.lstrip("/")
-        if not base_url.endswith("/"):
-            base_url += "/"
-        url = unquote(urljoin(base_url, quote(formatted_path)))
-        extra: dict[str, Any]
-        serializer = self._get_serializer()
-
-        if isinstance(self.body, dict):
-            # Create a new body without meta-data
-            body_without_prefixed_field = {
-                key: value
-                for key, value in self.body.items()
-                if not key.startswith(VAS_KEY_PREFIX)
-            }
-            if self.metadata == {}:
-                self.metadata = {
-                    f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
-                    for key, value in self.body.items()
-                    if key.startswith(VAS_KEY_PREFIX)
-                }
-            new_body = {
-                **body_without_prefixed_field,
-                **{
-                    k: obj["image_name"]
-                    for k, obj in self.metadata.items()
-                }
-            }
-            self.body = new_body
-
-            logger.debug(
-                "deps/schemathesis/src/schemathesis/models.py: new body: %s", self.body
-            )
-            logger.debug(
-                "deps/schemathesis/src/schemathesis/models.py: new metadata: %s",
-                self.metadata,
-            )
-
-        if serializer is not None and not isinstance(self.body, NotSet):
-            context = SerializerContext(case=self)
-            extra = serializer.as_requests(context, self.body)
-        else:
-            extra = {}
-        if self._auth is not None:
-            extra["auth"] = self._auth
-
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py -> old extra: %s", extra
+    def as_transport_kwargs(
+        self, base_url: str | None = None, headers: dict[str, str] | None = None
+    ) -> dict[str, Any]:
+        """Convert the test case into a dictionary acceptable by the underlying transport call."""
+        return self.operation.schema.transport.serialize_case(
+            self, base_url=base_url, headers=headers
         )
-
-        # Convert key "files" in extra, it's binary field to right tuple format
-        new_extra: dict[str, Any] = {}
-        files = []
-        for key, value in extra.items():
-            if key != "files":
-                new_extra[key] = value
-                continue
-
-            files = extra["files"]
-            formatted_files = []
-            for element in files:
-                _key, _value = element[0], element[1]
-                if not isinstance(_value, tuple) and _value[0] != None:
-                    if _key in self.metadata:
-                        _value = (
-                            self.metadata[_key]["image_name"],
-                            _value,
-                            self.metadata[_key]["image_type"],
-                        )
-                formatted_files.append((_key, _value))
-            new_extra[key] = formatted_files
-
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py -> new extra: %s", new_extra
-        )
-
-        additional_headers = new_extra.pop("headers", None)
-        # additional_headers = extra.pop("headers", None)
-        if additional_headers:
-            # Additional headers, needed for the serializer
-            for key, value in additional_headers.items():
-                final_headers.setdefault(key, value)
-        return {
-            "method": self.method,
-            "url": url,
-            "cookies": self.cookies,
-            "headers": final_headers,
-            "params": self.query,
-            **new_extra,
-            # **extra,
-        }
 
     def call(
         self,
@@ -442,79 +371,29 @@ class Case:
         params: dict[str, Any] | None = None,
         cookies: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> requests.Response:
-        import requests
-
-        """Make a network call with `requests`."""
+    ) -> GenericResponse:
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
-        data = self.as_requests_kwargs(base_url, headers)
-
-        logger.debug(
-            "deps/schemathesis/src/schemathesis/models.py: call function -> data as_request_kwargs: %s",
-            data,
+        response = self.operation.schema.transport.send(
+            self,
+            session=session,
+            base_url=base_url,
+            headers=headers,
+            params=params,
+            cookies=cookies,
+            **kwargs,
         )
-
-        data.update(kwargs)
-        if params is not None:
-            _merge_dict_to(data, "params", params)
-        if cookies is not None:
-            _merge_dict_to(data, "cookies", cookies)
-        data.setdefault("timeout", DEFAULT_RESPONSE_TIMEOUT / 1000)
-        if session is None:
-            validate_vanilla_requests_kwargs(data)
-            session = requests.Session()
-            close_session = True
-        else:
-            close_session = False
-        verify = data.get("verify", True)
-        try:
-            with self.operation.schema.ratelimit():
-                response = session.request(**data)
-        except requests.Timeout as exc:
-            timeout = (
-                1000 * data["timeout"]
-            )  # It is defined and not empty, since the exception happened
-            request = cast(requests.PreparedRequest, exc.request)
-            code_message = self._get_code_message(
-                self.operation.schema.code_sample_style, request, verify=verify
-            )
-            message = f"The server failed to respond within the specified limit of {timeout:.2f}ms"
-            raise get_timeout_error(timeout)(
-                f"\n\n1. {failures.RequestTimeout.title}\n\n{message}\n\n{code_message}",
-                context=failures.RequestTimeout(message=message, timeout=timeout),
-            ) from None
-
-        response.verify = verify
         dispatch("after_call", hook_context, self, response)
-        if close_session:
-            session.close()
         return response
 
+    @deprecated_function(removed_in="4.0", replacement="Case.as_transport_kwargs")
     def as_werkzeug_kwargs(
         self, headers: dict[str, str] | None = None
     ) -> dict[str, Any]:
         """Convert the case into a dictionary acceptable by werkzeug.Client."""
-        final_headers = self._get_headers(headers)
-        if self.media_type and not isinstance(self.body, NotSet):
-            # If we need to send a payload, then the Content-Type header should be set
-            final_headers["Content-Type"] = self.media_type
-        extra: dict[str, Any]
-        serializer = self._get_serializer()
-        if serializer is not None and not isinstance(self.body, NotSet):
-            context = SerializerContext(case=self)
-            extra = serializer.as_werkzeug(context, self.body)
-        else:
-            extra = {}
-        return {
-            "method": self.method,
-            "path": self.operation.schema.get_full_path(self.formatted_path),
-            # Convert to a regular dictionary, as we use `CaseInsensitiveDict` which is not supported by Werkzeug
-            "headers": dict(final_headers),
-            "query_string": self.query,
-            **extra,
-        }
+        return WSGITransport(self.app).serialize_case(self, headers=headers)
 
+    @deprecated_function(removed_in="4.0", replacement="Case.call")
     def call_wsgi(
         self,
         app: Any = None,
@@ -535,19 +414,13 @@ class Case:
             )
         hook_context = HookContext(operation=self.operation)
         dispatch("before_call", hook_context, self)
-        data = self.as_werkzeug_kwargs(headers)
-        if query_string is not None:
-            _merge_dict_to(data, "query_string", query_string)
-        client = werkzeug.Client(application, WSGIResponse)
-        with cookie_handler(client, self.cookies), self.operation.schema.ratelimit():
-            response = client.open(**data, **kwargs)
-        requests_kwargs = self.as_requests_kwargs(
-            base_url=self.get_full_base_url(), headers=headers
+        response = WSGITransport(application).send(
+            self, headers=headers, params=query_string, **kwargs
         )
-        response.request = requests.Request(**requests_kwargs).prepare()
         dispatch("after_call", hook_context, self, response)
         return response
 
+    @deprecated_function(removed_in="4.0", replacement="Case.call")
     def call_asgi(
         self,
         app: Any = None,
@@ -555,20 +428,19 @@ class Case:
         headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> requests.Response:
-        from starlette_testclient import TestClient as ASGIClient
-
         application = app or self.app
         if application is None:
             raise RuntimeError(
                 "ASGI application instance is required. "
                 "Please, set `app` argument in the schema constructor or pass it to `call_asgi`"
             )
-        if base_url is None:
-            base_url = self.get_full_base_url()
-        with ASGIClient(application) as client:
-            return self.call(
-                base_url=base_url, session=client, headers=headers, **kwargs
-            )
+        hook_context = HookContext(operation=self.operation)
+        dispatch("before_call", hook_context, self)
+        response = ASGITransport(application).send(
+            self, base_url=base_url, headers=headers, **kwargs
+        )
+        dispatch("after_call", hook_context, self, response)
+        return response
 
     def validate_response(
         self,
@@ -634,7 +506,9 @@ class Case:
             if not payload:
                 formatted += "\n\n    <EMPTY>"
             else:
-                payload = prepare_response_payload(payload)
+                payload = prepare_response_payload(
+                    payload, config=self.operation.schema.output_config
+                )
                 payload = textwrap.indent(f"\n`{payload}`", prefix="    ")
                 formatted += f"\n{payload}"
             code_sample_style = (
@@ -682,12 +556,19 @@ class Case:
         self.validate_response(response, checks, code_sample_style=code_sample_style)
         return response
 
+    def _get_url(self, base_url: str | None) -> str:
+        base_url = self._get_base_url(base_url)
+        formatted_path = self.formatted_path.lstrip("/")
+        if not base_url.endswith("/"):
+            base_url += "/"
+        return unquote(urljoin(base_url, quote(formatted_path)))
+
     def get_full_url(self) -> str:
         """Make a full URL to the current API operation, including query parameters."""
         import requests
 
         base_url = self.base_url or "http://127.0.0.1"
-        kwargs = self.as_requests_kwargs(base_url)
+        kwargs = RequestsTransport().serialize_case(self, base_url=base_url)
         request = requests.Request(**kwargs)
         prepared = requests.Session().prepare_request(request)
         return cast(str, prepared.url)
@@ -706,6 +587,8 @@ class Case:
             cookies=fast_deepcopy(self.cookies),
             query=fast_deepcopy(self.query),
             body=fast_deepcopy(self.body),
+            generation_time=self.generation_time,
+            id=self.id,
         )
 
 
@@ -757,7 +640,7 @@ D = TypeVar("D", bound=dict)
 
 
 @dataclass
-class OperationDefinition(Generic[P, D]):
+class OperationDefinition(Generic[D]):
     """A wrapper to store not resolved API operation definitions.
 
     To prevent recursion errors we need to store definitions without resolving references. But operation definitions
@@ -768,20 +651,8 @@ class OperationDefinition(Generic[P, D]):
     raw: D
     resolved: D
     scope: str
-    parameters: Sequence[P]
 
-    def __contains__(self, item: str | int) -> bool:
-        return item in self.resolved
-
-    def __getitem__(
-        self, item: str | int
-    ) -> None | bool | float | str | list | dict[str, Any]:
-        return self.resolved[item]
-
-    def get(
-        self, item: str | int, default: Any = None
-    ) -> None | bool | float | str | list | dict[str, Any]:
-        return self.resolved.get(item, default)
+    __slots__ = ("raw", "resolved", "scope")
 
 
 C = TypeVar("C", bound=Case)
@@ -829,6 +700,10 @@ class APIOperation(Generic[P, C]):
     def links(self) -> dict[str, dict[str, Any]]:
         return self.schema.get_links(self)
 
+    @property
+    def tags(self) -> list[str] | None:
+        return self.schema.get_tags(self)
+
     def iter_parameters(self) -> Iterator[P]:
         """Iterate over all operation's parameters."""
         return chain(self.path_parameters, self.headers, self.cookies, self.query)
@@ -874,7 +749,10 @@ class APIOperation(Generic[P, C]):
     ) -> st.SearchStrategy:
         """Turn this API operation into a Hypothesis strategy."""
 
-        logger.debug("deps/schemathesis/src/schemathesis/models.py: as_strategy -> kwargs: %s", kwargs)
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py: as_strategy -> kwargs: %s",
+            kwargs,
+        )
         # Cai nay quan trong cuc ki
         strategy = self.schema.get_case_strategy(
             self,
@@ -911,9 +789,13 @@ class APIOperation(Generic[P, C]):
     def get_security_requirements(self) -> list[str]:
         return self.schema.get_security_requirements(self)
 
-    def get_strategies_from_examples(self) -> list[st.SearchStrategy[Case]]:
+    def get_strategies_from_examples(
+        self, as_strategy_kwargs: dict[str, Any] | None = None
+    ) -> list[st.SearchStrategy[Case]]:
         """Get examples from the API operation."""
-        return self.schema.get_strategies_from_examples(self)
+        return self.schema.get_strategies_from_examples(
+            self, as_strategy_kwargs=as_strategy_kwargs
+        )
 
     def get_stateful_tests(
         self, response: GenericResponse, stateful: Stateful | None
@@ -935,6 +817,19 @@ class APIOperation(Generic[P, C]):
 
     def get_request_payload_content_types(self) -> list[str]:
         return self.schema.get_request_payload_content_types(self)
+
+    def _get_default_media_type(self) -> str:
+        # If the user wants to send payload, then there should be a media type, otherwise the payload is ignored
+        media_types = self.get_request_payload_content_types()
+        if len(media_types) == 1:
+            # The only available option
+            return media_types[0]
+        media_types_repr = ", ".join(media_types)
+        raise UsageError(
+            "Can not detect appropriate media type. "
+            "You can either specify one of the defined media types "
+            f"or pass any other media type available for serialization. Defined media types: {media_types_repr}"
+        )
 
     def partial_deepcopy(self) -> APIOperation:
         return self.__class__(
@@ -1056,6 +951,7 @@ class Request:
     method: str
     uri: str
     body: str | None
+    body_size: int | None
     headers: Headers
 
     @classmethod
@@ -1064,7 +960,7 @@ class Request:
         import requests
 
         base_url = case.get_full_base_url()
-        kwargs = case.as_requests_kwargs(base_url)
+        kwargs = RequestsTransport().serialize_case(case, base_url=base_url)
         request = requests.Request(**kwargs)
         # logger.debug("deps/schemathesis/src/schemathesis/models.py: from_case in Request -> request: %s", request)
         prepared = session.prepare_request(request)
@@ -1089,7 +985,16 @@ class Request:
             method=method,
             headers={key: [value] for (key, value) in prepared.headers.items()},
             body=serialize_payload(body) if body is not None else body,
+            body_size=len(body) if body is not None else None,
         )
+
+    def deserialize_body(self) -> bytes | None:
+        """Deserialize the request body.
+
+        `Request` should be serializable to JSON, therefore body is encoded as base64 string
+        to support arbitrary binary data.
+        """
+        return deserialize_payload(self.body)
 
 
 @dataclass(repr=False)
@@ -1100,6 +1005,7 @@ class Response:
     message: str
     headers: dict[str, list[str]]
     body: str | None
+    body_size: int | None
     encoding: str | None
     http_version: str
     elapsed: float
@@ -1108,12 +1014,14 @@ class Response:
     @classmethod
     def from_requests(cls, response: requests.Response) -> Response:
         """Create a response from requests.Response."""
+        raw = response.raw
+        raw_headers = raw.headers if raw is not None else {}
         headers = {
-            name: response.raw.headers.getlist(name)
-            for name in response.raw.headers.keys()
+            name: response.raw.headers.getlist(name) for name in raw_headers.keys()
         }
         # Similar to http.client:319 (HTTP version detection in stdlib's `http` package)
-        http_version = "1.0" if response.raw.version == 10 else "1.1"
+        version = raw.version if raw is not None else 10
+        http_version = "1.0" if version == 10 else "1.1"
 
         def is_empty(_response: requests.Response) -> bool:
             # Assume the response is empty if:
@@ -1128,6 +1036,7 @@ class Response:
             status_code=response.status_code,
             message=response.reason,
             body=body,
+            body_size=len(response.content) if body is not None else None,
             encoding=response.encoding,
             headers=headers,
             http_version=http_version,
@@ -1159,12 +1068,24 @@ class Response:
             status_code=response.status_code,
             message=message,
             body=body,
+            body_size=len(data) if body is not None else None,
             encoding=encoding,
             headers=headers,
             http_version="1.1",
             elapsed=elapsed,
             verify=True,
         )
+
+    def deserialize_body(self) -> bytes | None:
+        """Deserialize the response body.
+
+        `Response` should be serializable to JSON, therefore body is encoded as base64 string
+        to support arbitrary binary data.
+        """
+        return deserialize_payload(self.body)
+
+
+TIMEZONE = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
 
 
 @dataclass
@@ -1176,9 +1097,9 @@ class Interaction:
     checks: list[Check]
     status: Status
     data_generation_method: DataGenerationMethod
-    case: Case
+
     recorded_at: str = field(
-        default_factory=lambda: datetime.datetime.now().isoformat()
+        default_factory=lambda: datetime.datetime.now(TIMEZONE).isoformat()
     )
 
     @classmethod
@@ -1206,7 +1127,6 @@ class Interaction:
             data_generation_method=cast(
                 DataGenerationMethod, case.data_generation_method
             ),
-            case=case,
         )
 
     @classmethod
@@ -1224,7 +1144,6 @@ class Interaction:
         session = requests.Session()
         session.headers.update(headers)
         return cls(
-            case=case,
             request=Request.from_case(case, session),
             response=Response.from_wsgi(response, elapsed),
             status=status,

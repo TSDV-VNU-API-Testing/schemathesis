@@ -8,11 +8,12 @@ from hypothesis import given, settings
 
 import schemathesis
 from schemathesis._compat import MultipleFailures
-from schemathesis.constants import SCHEMATHESIS_TEST_CASE_HEADER, USER_AGENT
-from schemathesis.generation import DataGenerationMethod
+from schemathesis.constants import NOT_SET, SCHEMATHESIS_TEST_CASE_HEADER, USER_AGENT
 from schemathesis.exceptions import CheckFailed, UsageError
-from schemathesis.models import APIOperation, Case, CaseSource, OperationDefinition, Request, Response, _merge_dict_to
+from schemathesis.generation import DataGenerationMethod
+from schemathesis.models import APIOperation, Case, CaseSource, Request, Response, _merge_dict_to
 from schemathesis.specs.openapi.checks import content_type_conformance, response_schema_conformance
+from schemathesis.transports import WSGITransport
 
 
 @pytest.fixture
@@ -26,25 +27,44 @@ def schema_with_payload(empty_open_api_3_schema):
                 },
                 "responses": {"200": {"description": "OK"}},
             },
+            "put": {
+                "requestBody": {"$ref": "#/components/requestBodies/Sample"},
+                "responses": {"200": {"description": "OK"}},
+            },
+            "patch": {
+                "requestBody": {"$ref": "#/components/requestBodies/Ref"},
+                "responses": {"200": {"description": "OK"}},
+            },
         },
     }
-    return schemathesis.from_dict(empty_open_api_3_schema)
+    empty_open_api_3_schema["components"] = {
+        "requestBodies": {
+            "Sample": {
+                "required": True,
+                "content": {"text/plain": {"schema": {"type": "object"}}},
+            },
+            "Ref": {"$ref": "#/components/requestBodies/Sample"},
+        }
+    }
+    return schemathesis.from_dict(empty_open_api_3_schema, validate_schema=True)
 
 
 def test_make_case_explicit_media_type(schema_with_payload):
     # When there is only one possible media type
     # And the `media_type` argument is passed to `make_case` explicitly
-    case = schema_with_payload["/data"]["POST"].make_case(body="<foo></foo>", media_type="text/xml")
-    # Then this explicit media type should be in `case`
-    assert case.media_type == "text/xml"
+    for method in ("POST", "PUT", "PATCH"):
+        case = schema_with_payload["/data"][method].make_case(body="<foo></foo>", media_type="text/xml")
+        # Then this explicit media type should be in `case`
+        assert case.media_type == "text/xml"
 
 
 def test_make_case_automatic_media_type(schema_with_payload):
     # When there is only one possible media type
     # And the `media_type` argument is not passed to `make_case`
-    case = schema_with_payload["/data"]["POST"].make_case(body="foo")
-    # Then it should be chosen automatically
-    assert case.media_type == "text/plain"
+    for method in ("POST", "PUT", "PATCH"):
+        case = schema_with_payload["/data"][method].make_case(body="foo")
+        # Then it should be chosen automatically
+        assert case.media_type == "text/plain"
 
 
 def test_make_case_missing_media_type(empty_open_api_3_schema):
@@ -94,15 +114,15 @@ def test_case_repr(swagger_20, kwargs, expected):
 
 @pytest.mark.parametrize("override", (False, True))
 @pytest.mark.parametrize("converter", (lambda x: x, lambda x: x + "/"))
-def test_as_requests_kwargs(override, server, base_url, swagger_20, converter):
+def test_as_transport_kwargs(override, server, base_url, swagger_20, converter):
     base_url = converter(base_url)
     operation = APIOperation("/success", "GET", {}, swagger_20)
     case = operation.make_case(cookies={"TOKEN": "secret"})
     if override:
-        data = case.as_requests_kwargs(base_url)
+        data = case.as_transport_kwargs(base_url)
     else:
         operation.base_url = base_url
-        data = case.as_requests_kwargs()
+        data = case.as_transport_kwargs()
     assert data == {
         "headers": {"User-Agent": USER_AGENT, SCHEMATHESIS_TEST_CASE_HEADER: ANY},
         "method": "GET",
@@ -115,13 +135,24 @@ def test_as_requests_kwargs(override, server, base_url, swagger_20, converter):
     assert response.json() == {"success": True}
 
 
+@pytest.mark.operations("create_user")
+def test_mutate_body(openapi3_schema):
+    operation = openapi3_schema["/users/"]["post"]
+    case = operation.make_case()
+    case.body = {"foo": "bar"}
+    response = case.call()
+    assert response.request.body == json.dumps(case.body).encode()
+    openapi3_schema.transport = WSGITransport(42)
+    assert case.as_transport_kwargs()["json"] == case.body
+
+
 def test_reserved_characters_in_operation_name(swagger_20):
     # See GH-992
     # When an API operation name contains `:`
     operation = APIOperation("/foo:bar", "GET", {}, swagger_20)
     case = operation.make_case()
     # Then it should not be truncated during API call
-    assert case.as_requests_kwargs("/")["url"] == "/foo:bar"
+    assert case.as_transport_kwargs("/")["url"] == "/foo:bar"
 
 
 @pytest.mark.parametrize(
@@ -133,11 +164,11 @@ def test_reserved_characters_in_operation_name(swagger_20):
         ({"UsEr-agEnT": "foo/1.0"}, {"UsEr-agEnT": "foo/1.0", "X-Key": "foo"}),
     ),
 )
-def test_as_requests_kwargs_override_user_agent(server, openapi2_base_url, swagger_20, headers, expected):
+def test_as_transport_kwargs_override_user_agent(server, openapi2_base_url, swagger_20, headers, expected):
     operation = APIOperation("/success", "GET", {}, swagger_20, base_url=openapi2_base_url)
     original_headers = headers.copy() if headers is not None else headers
     case = operation.make_case(headers=headers)
-    data = case.as_requests_kwargs(headers={"X-Key": "foo"})
+    data = case.as_transport_kwargs(headers={"X-Key": "foo"})
     expected[SCHEMATHESIS_TEST_CASE_HEADER] = ANY
     assert data == {
         "headers": expected,
@@ -153,7 +184,7 @@ def test_as_requests_kwargs_override_user_agent(server, openapi2_base_url, swagg
 
 
 @pytest.mark.parametrize("header", ("content-Type", "Content-Type"))
-def test_as_requests_kwargs_override_content_type(empty_open_api_3_schema, header):
+def test_as_transport_kwargs_override_content_type(empty_open_api_3_schema, header):
     empty_open_api_3_schema["paths"] = {
         "/data": {
             "post": {
@@ -168,7 +199,7 @@ def test_as_requests_kwargs_override_content_type(empty_open_api_3_schema, heade
     schema = schemathesis.from_dict(empty_open_api_3_schema)
     case = schema["/data"]["post"].make_case(body="<html></html>", media_type="text/plain")
     # When the `Content-Type` header is explicitly passed
-    data = case.as_requests_kwargs(headers={header: "text/html"})
+    data = case.as_transport_kwargs(headers={header: "text/html"})
     # Then it should be used in network requests
     assert data == {
         "method": "POST",
@@ -206,7 +237,7 @@ def test_call_and_validate(openapi3_schema_url):
 
 
 @pytest.mark.operations("success")
-def test_call_asgi_and_validate(fastapi_app):
+def test_call_and_validate_for_asgi(fastapi_app):
     api_schema = schemathesis.from_dict(fastapi_app.openapi(), force_schema_version="30")
 
     @given(case=api_schema["/users"]["GET"].as_strategy())
@@ -223,6 +254,7 @@ def test_case_partial_deepcopy(swagger_20):
     media_type = "application/json"
     original_case = Case(
         operation=operation,
+        generation_time=0.0,
         media_type=media_type,
         path_parameters={"test": "test"},
         headers={"Content-Type": "application/json"},
@@ -252,6 +284,7 @@ def test_case_partial_deepcopy_same_generated_code(swagger_20):
     operation = APIOperation("/example/path", "GET", {}, swagger_20)
     original_case = Case(
         operation=operation,
+        generation_time=0.0,
         media_type="application/json",
         path_parameters={"test": "test"},
         headers={"Content-Type": "application/json"},
@@ -267,11 +300,11 @@ def test_case_partial_deepcopy_same_generated_code(swagger_20):
 
 def test_case_partial_deepcopy_source(swagger_20):
     operation = APIOperation("/example/path", "GET", {}, swagger_20)
-    original_case = Case(operation=operation)
+    original_case = Case(operation=operation, generation_time=0.0)
     response = requests.Response()
     response.status_code = 500
     original_case.source = CaseSource(
-        case=Case(operation=operation, query={"first": 1}), response=response, elapsed=1.0
+        case=Case(operation=operation, generation_time=0.0, query={"first": 1}), response=response, elapsed=1.0
     )
     copied_case = original_case.partial_deepcopy()
     assert copied_case.source.case.query == original_case.source.case.query
@@ -388,24 +421,26 @@ def test_validate_response_schema_path(
 def test_response_from_requests(base_url):
     response = requests.get(f"{base_url}/cookies", timeout=1)
     serialized = Response.from_requests(response)
+    assert serialized.deserialize_body() == b""
     assert serialized.status_code == 200
     assert serialized.http_version == "1.1"
     assert serialized.message == "OK"
     assert serialized.headers["Set-Cookie"] == ["foo=bar; Path=/", "baz=spam; Path=/"]
 
 
-@pytest.mark.parametrize(
-    "base_url, expected",
-    (
-        (None, "http://127.0.0.1/api/v3/users/test"),
-        ("http://127.0.0.1/api/v3", "http://127.0.0.1/api/v3/users/test"),
-    ),
-)
-def test_from_case(swagger_20, base_url, expected):
+@pytest.mark.parametrize("body, expected", ((NOT_SET, None), (b"example", b"example")))
+def test_from_case(swagger_20, body, expected):
     operation = APIOperation("/users/{name}", "GET", {}, swagger_20, base_url="http://127.0.0.1/api/v3")
-    case = Case(operation, path_parameters={"name": "test"})
+    case = Case(
+        operation,
+        generation_time=0.0,
+        path_parameters={"name": "test"},
+        body=body,
+        media_type="application/octet-stream",
+    )
     session = requests.Session()
     request = Request.from_case(case, session)
+    assert request.deserialize_body() == expected
     assert request.uri == "http://127.0.0.1/api/v3/users/test"
 
 
@@ -428,7 +463,7 @@ def test_method_suggestion(swagger_20):
 
 def test_deprecated_attribute(swagger_20):
     operation = APIOperation("/users/{name}", "GET", {}, swagger_20, base_url="http://127.0.0.1/api/v3")
-    case = Case(operation)
+    case = Case(operation, generation_time=0.0)
     with pytest.warns(Warning) as records:
         assert case.endpoint == case.operation == operation
     assert str(records[0].message) == (
@@ -563,6 +598,7 @@ def test_call_overrides(mocker, arg, openapi_30):
     original = {"A": "X", "B": "X"}
     case = Case(
         openapi_30["/users"]["GET"],
+        generation_time=0.0,
         headers=original,
         cookies=original,
         query=original,
@@ -582,12 +618,14 @@ def test_merge_dict_to():
     assert data == {"params": {"A": 1, "B": 2}}
 
 
-@pytest.mark.parametrize("arg", ("headers", "query_string"))
-def test_call_wsgi_overrides(mocker, arg, openapi_30):
+@pytest.mark.parametrize("call_arg, client_arg", (("headers", "headers"), ("params", "query_string")))
+def test_call_overrides_wsgi(mocker, call_arg, client_arg, openapi_30):
     spy = mocker.patch("werkzeug.Client.open", side_effect=ValueError)
     original = {"A": "X", "B": "X"}
+    openapi_30.transport = WSGITransport(42)
     case = Case(
         openapi_30["/users"]["GET"],
+        generation_time=0.0,
         headers=original,
         query=original,
     )
@@ -595,18 +633,10 @@ def test_call_wsgi_overrides(mocker, arg, openapi_30):
     # When user passes header / query explicitly
     overridden = {"B": "Y"}
     try:
-        case.call_wsgi(**{arg: overridden}, base_url="http://127.0.0.1", app=42)
+        case.call(**{call_arg: overridden}, base_url="http://127.0.0.1", app=42)
     except ValueError:
         pass
-    _assert_override(spy, arg, original, overridden)
-
-
-def test_operation_definition_as_dict():
-    definition = OperationDefinition({"A": 1, "B": 2}, {"A": 1, "B": 2, "C": 3}, "", [])
-    assert definition["C"] == 3
-    assert definition.get("C") == 3
-    assert definition.get("D") is None
-    assert "C" in definition
+    _assert_override(spy, client_arg, original, overridden)
 
 
 @pytest.mark.parametrize(

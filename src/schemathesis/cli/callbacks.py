@@ -7,25 +7,25 @@ import re
 import traceback
 from contextlib import contextmanager
 from functools import partial
-from typing import Generator, TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Generator
 from urllib.parse import urlparse
 
 import click
-
 from click.types import LazyFile  # type: ignore
 
 from .. import exceptions, experimental, throttling
 from ..code_samples import CodeSampleStyle
+from ..constants import FALSE_VALUES, TRUE_VALUES
 from ..exceptions import extract_nth_traceback
 from ..generation import DataGenerationMethod
-from ..constants import TRUE_VALUES, FALSE_VALUES
 from ..internal.validation import file_exists, is_filename, is_illegal_surrogate
 from ..loaders import load_app
 from ..service.hosts import get_temporary_hosts_file
+from ..stateful import Stateful
 from ..transports.headers import has_invalid_characters, is_latin_1_encodable
 from ..types import PathLike
+from .cassettes import CassetteFormat
 from .constants import DEFAULT_WORKERS
-from ..stateful import Stateful
 
 if TYPE_CHECKING:
     import hypothesis
@@ -343,6 +343,10 @@ def convert_checks(ctx: click.core.Context, param: click.core.Parameter, value: 
 
 def convert_code_sample_style(ctx: click.core.Context, param: click.core.Parameter, value: str) -> CodeSampleStyle:
     return CodeSampleStyle.from_str(value)
+
+
+def convert_cassette_format(ctx: click.core.Context, param: click.core.Parameter, value: str) -> CassetteFormat:
+    return CassetteFormat.from_str(value)
 
 
 def convert_data_generation_method(

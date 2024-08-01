@@ -1,19 +1,23 @@
 from __future__ import annotations
+
 import enum
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ..internal.datetime import current_datetime
+from ..exceptions import RuntimeErrorType, SchemaError, SchemaErrorType, format_exception
 from ..generation import DataGenerationMethod
-from ..exceptions import SchemaError, SchemaErrorType, format_exception, RuntimeErrorType
+from ..internal.datetime import current_datetime
+from ..internal.result import Err, Ok, Result
 from .serialization import SerializedError, SerializedTestResult
-
 
 if TYPE_CHECKING:
     from ..models import APIOperation, Status, TestResult, TestResultSet
     from ..schemas import BaseSchema
+    from ..service.models import AnalysisResult
+    from ..stateful import events
+    from . import probes
 
 
 @dataclass
@@ -60,6 +64,7 @@ class Initialized(ExecutionEvent):
         schema: BaseSchema,
         count_operations: bool = True,
         count_links: bool = True,
+        start_time: float | None = None,
         started_at: str | None = None,
         seed: int | None,
     ) -> Initialized:
@@ -70,10 +75,54 @@ class Initialized(ExecutionEvent):
             links_count=schema.links_count if count_links else None,
             location=schema.location,
             base_url=schema.get_base_url(),
+            start_time=start_time or time.monotonic(),
             started_at=started_at or current_datetime(),
             specification_name=schema.verbose_name,
             seed=seed,
         )
+
+
+@dataclass
+class BeforeProbing(ExecutionEvent):
+    pass
+
+
+@dataclass
+class AfterProbing(ExecutionEvent):
+    probes: list[probes.ProbeRun] | None
+
+    def asdict(self, **kwargs: Any) -> dict[str, Any]:
+        probes = self.probes or []
+        return {"probes": [probe.serialize() for probe in probes], "events_type": self.__class__.__name__}
+
+
+@dataclass
+class BeforeAnalysis(ExecutionEvent):
+    pass
+
+
+@dataclass
+class AfterAnalysis(ExecutionEvent):
+    analysis: Result[AnalysisResult, Exception] | None
+
+    def _serialize(self) -> dict[str, Any]:
+        from ..service.models import AnalysisSuccess
+
+        data = {}
+        if isinstance(self.analysis, Ok):
+            result = self.analysis.ok()
+            if isinstance(result, AnalysisSuccess):
+                data["analysis_id"] = result.id
+            else:
+                data["error"] = result.message
+        elif isinstance(self.analysis, Err):
+            data["error"] = format_exception(self.analysis.err())
+        return data
+
+    def asdict(self, **kwargs: Any) -> dict[str, Any]:
+        data = self._serialize()
+        data["event_type"] = self.__class__.__name__
+        return data
 
 
 class CurrentOperationMixin:
@@ -188,6 +237,9 @@ class InternalErrorType(str, enum.Enum):
     OTHER = "other"
 
 
+DEFAULT_INTERNAL_ERROR_MESSAGE = "An internal error occurred during the test run"
+
+
 @dataclass
 class InternalError(ExecutionEvent):
     """An error that happened inside the runner."""
@@ -226,7 +278,7 @@ class InternalError(ExecutionEvent):
             type_=InternalErrorType.OTHER,
             subtype=None,
             title="Test Execution Error",
-            message="An internal error occurred during the test run",
+            message=DEFAULT_INTERNAL_ERROR_MESSAGE,
             extras=[],
         )
 
@@ -253,6 +305,28 @@ class InternalError(ExecutionEvent):
             exception=exception,
             exception_with_traceback=exception_with_traceback,
         )
+
+
+@dataclass
+class StatefulEvent(ExecutionEvent):
+    """Represents an event originating from the state machine runner."""
+
+    data: events.StatefulEvent
+
+    __slots__ = ("data",)
+
+    def asdict(self, **kwargs: Any) -> dict[str, Any]:
+        return {"data": self.data.asdict(**kwargs), "event_type": self.__class__.__name__}
+
+
+@dataclass
+class AfterStatefulExecution(ExecutionEvent):
+    """Happens after the stateful test run."""
+
+    status: Status
+    result: SerializedTestResult
+    data_generation_method: list[DataGenerationMethod]
+    thread_id: int = field(default_factory=threading.get_ident)
 
 
 @dataclass

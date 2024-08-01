@@ -1,19 +1,22 @@
 from __future__ import annotations
+
 import os
 import platform
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any, Callable
 
 import click
 import pytest
 import requests
 import urllib3
+from syrupy import SnapshotAssertion
 
 import schemathesis
+from schemathesis.exceptions import CheckFailed
+from schemathesis.internal.copy import fast_deepcopy
 from schemathesis.internal.transformation import merge_recursively
 from schemathesis.loaders import load_yaml
 from schemathesis.models import Case
-from schemathesis.exceptions import CheckFailed
 from schemathesis.schemas import BaseSchema
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +35,7 @@ def get_schema(schema_name: str = "simple_swagger.yaml", **kwargs: Any) -> BaseS
 
 
 def make_schema(schema_name: str = "simple_swagger.yaml", **kwargs: Any) -> dict[str, Any]:
-    schema = load_schema(schema_name)
+    schema = fast_deepcopy(load_schema(schema_name))
     return merge_recursively(kwargs, schema)
 
 
@@ -88,3 +91,34 @@ def strip_style_win32(styled_output: str) -> str:
     if platform.system() == "Windows":
         return click.unstyle(styled_output)
     return styled_output
+
+
+def flaky(*, max_runs: int, min_passes: int):
+    """A decorator to mark a test as flaky."""
+
+    def decorate(test):
+        @wraps(test)
+        def inner(*args, **kwargs):
+            snapshot_fixture_name = None
+            snapshot_cli = None
+            for name, kwarg in kwargs.items():
+                if isinstance(kwarg, SnapshotAssertion):
+                    snapshot_fixture_name = name
+                    snapshot_cli = kwarg
+                    break
+            runs = passes = 0
+            while passes < min_passes:
+                runs += 1
+                try:
+                    test(*args, **kwargs)
+                except Exception:
+                    if snapshot_fixture_name is not None:
+                        kwargs[snapshot_fixture_name] = snapshot_cli.rebuild()
+                    if runs >= max_runs:
+                        raise
+                else:
+                    passes += 1
+
+        return inner
+
+    return decorate

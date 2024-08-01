@@ -40,7 +40,7 @@ LINK = Link(
 
 @pytest.fixture(scope="module")
 def case():
-    return Case(API_OPERATION)
+    return Case(API_OPERATION, generation_time=0.0)
 
 
 @pytest.fixture(scope="module")
@@ -311,13 +311,15 @@ def test_get_container_invalid_location(swagger_20):
             raw={},
             resolved={},
             scope="",
-            parameters=[
-                OpenAPI30Parameter({"in": "query", "name": "code", "type": "integer"}),
-                OpenAPI30Parameter({"in": "query", "name": "user_id", "type": "integer"}),
-                OpenAPI30Parameter({"in": "query", "name": "common", "type": "integer"}),
-            ],
         ),
     )
+    parameters = [
+        OpenAPI30Parameter({"in": "query", "name": "code", "type": "integer"}),
+        OpenAPI30Parameter({"in": "query", "name": "user_id", "type": "integer"}),
+        OpenAPI30Parameter({"in": "query", "name": "common", "type": "integer"}),
+    ]
+    for parameter in parameters:
+        operation.add_parameter(parameter)
     case = operation.make_case()
     with pytest.raises(ValueError, match="Parameter `unknown` is not defined in API operation `GET /users/{user_id}`"):
         get_container(case, None, "unknown")
@@ -335,7 +337,7 @@ def test_get_links_numeric_response_codes(status_code, openapi_30, expected):
     # When API definition contains response statuses as integers
     operation = openapi_30["/users"]["GET"]
     link_definition = {"operationRef": "#/paths/~1users/get"}
-    operation.definition.resolved["responses"] = {
+    operation.definition.raw["responses"] = {
         "200": {"description": "OK", "links": {"Foo": link_definition}},
         # Could be here due to YAML parsing + disabled schema validation
         201: {"description": "OK", "links": {"Bar": link_definition}},

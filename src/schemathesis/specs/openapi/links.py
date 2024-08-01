@@ -2,22 +2,26 @@
 
 Based on https://swagger.io/docs/specification/links/
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from difflib import get_close_matches
-from typing import TYPE_CHECKING, Any, Generator, NoReturn, Sequence, Union
+from typing import TYPE_CHECKING, Any, Generator, NoReturn, Sequence, TypedDict, Union
+
+from jsonschema import RefResolver
 
 from ...constants import NOT_SET
 from ...internal.copy import fast_deepcopy
 from ...models import APIOperation, Case
 from ...parameters import ParameterSet
-from ...stateful import ParsedData, StatefulTest
+from ...stateful import ParsedData, StatefulTest, UnresolvableLink
 from ...stateful.state_machine import Direction
 from ...types import NotSet
 from . import expressions
 from .constants import LOCATION_TO_CONTAINER
 from .parameters import OpenAPI20Body, OpenAPI30Body, OpenAPIParameter
+from .references import RECURSION_DEPTH_LIMIT, Unresolvable
 
 if TYPE_CHECKING:
     from ...transports.responses import GenericResponse
@@ -28,6 +32,7 @@ class Link(StatefulTest):
     operation: APIOperation
     parameters: dict[str, Any]
     request_body: Any = NOT_SET
+    merge_body: bool = True
 
     def __post_init__(self) -> None:
         if self.request_body is not NOT_SET and not self.operation.body:
@@ -52,6 +57,7 @@ class Link(StatefulTest):
             operation = source_operation.schema.get_operation_by_id(definition["operationId"])  # type: ignore
         else:
             operation = source_operation.schema.get_operation_by_reference(definition["operationRef"])  # type: ignore
+        extension = definition.get(SCHEMATHESIS_LINK_EXTENSION)
         return cls(
             # Pylint can't detect that the API operation is always defined at this point
             # E.g. if there is no matching operation or no operations at all, then a ValueError will be risen
@@ -61,22 +67,29 @@ class Link(StatefulTest):
             request_body=definition.get(
                 "requestBody", NOT_SET
             ),  # `None` might be a valid value - `null`
+            merge_body=(
+                extension.get("merge_body", True) if extension is not None else True
+            ),
         )
 
     def parse(self, case: Case, response: GenericResponse) -> ParsedData:
         """Parse data into a structure expected by links definition."""
         context = expressions.ExpressionContext(case=case, response=response)
-        parameters = {
-            parameter: expressions.evaluate(expression, context)
-            for parameter, expression in self.parameters.items()
-        }
+        parameters = {}
+        for parameter, expression in self.parameters.items():
+            evaluated = expressions.evaluate(expression, context)
+            if isinstance(evaluated, Unresolvable):
+                raise UnresolvableLink(
+                    f"Unresolvable reference in the link: {expression}"
+                )
+            parameters[parameter] = evaluated
+        body = expressions.evaluate(self.request_body, context, evaluate_nested=True)
+        if self.merge_body:
+            body = merge_body(case.body, body)
         return ParsedData(
             original_case=case,
             parameters=parameters,
-            # https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.3.md#link-object
-            # > A literal value or {expression} to use as a request body when calling the target operation.
-            # In this case all literals will be passed as is, and expressions will be evaluated
-            body=expressions.evaluate(self.request_body, context),
+            body=body,
         )
 
     def make_operation(self, collected: list[ParsedData]) -> APIOperation:
@@ -168,11 +181,11 @@ def get_links(
     response: GenericResponse, operation: APIOperation, field: str
 ) -> Sequence[Link]:
     """Get `x-links` / `links` definitions from the schema."""
-    responses = operation.definition.resolved["responses"]
+    responses = operation.definition.raw["responses"]
     if str(response.status_code) in responses:
-        response_definition = responses[str(response.status_code)]
+        definition = responses[str(response.status_code)]
     elif response.status_code in responses:
-        response_definition = responses[response.status_code]
+        definition = responses[response.status_code]
     else:
         response_definition = responses.get("default", {})
     links = response_definition.get(field, {})
@@ -180,6 +193,13 @@ def get_links(
         Link.from_definition(name, definition, operation)
         for name, definition in links.items()
     ]
+
+
+SCHEMATHESIS_LINK_EXTENSION = "x-schemathesis"
+
+
+class SchemathesisLink(TypedDict):
+    merge_body: bool
 
 
 @dataclass(repr=False)
@@ -195,13 +215,22 @@ class OpenAPILink(Direction):
     operation: APIOperation
     parameters: list[tuple[str | None, str, str]] = field(init=False)
     body: dict[str, Any] | NotSet = field(init=False)
+    merge_body: bool = True
+
+    def __repr__(self) -> str:
+        path = self.operation.path
+        method = self.operation.method
+        return f"state.schema['{path}']['{method}'].links['{self.status_code}']['{self.name}']"
 
     def __post_init__(self) -> None:
+        extension = self.definition.get(SCHEMATHESIS_LINK_EXTENSION)
         self.parameters = [
             normalize_parameter(parameter, expression)
             for parameter, expression in self.definition.get("parameters", {}).items()
         ]
         self.body = self.definition.get("requestBody", NOT_SET)
+        if extension is not None:
+            self.merge_body = extension.get("merge_body", True)
 
     def set_data(self, case: Case, elapsed: float, **kwargs: Any) -> None:
         """Assign all linked definitions to the new case instance."""
@@ -231,7 +260,11 @@ class OpenAPILink(Direction):
 
     def set_body(self, case: Case, context: expressions.ExpressionContext) -> None:
         if self.body is not NOT_SET:
-            case.body = expressions.evaluate(self.body, context)
+            evaluated = expressions.evaluate(self.body, context, evaluate_nested=True)
+            if self.merge_body:
+                case.body = merge_body(case.body, evaluated)
+            else:
+                case.body = evaluated
 
     def get_target_operation(self) -> APIOperation:
         if "operationId" in self.definition:
@@ -239,12 +272,18 @@ class OpenAPILink(Direction):
         return self.operation.schema.get_operation_by_reference(self.definition["operationRef"])  # type: ignore
 
 
+def merge_body(old: Any, new: Any) -> Any:
+    if isinstance(old, dict) and isinstance(new, dict):
+        return {**old, **new}
+    return new
+
+
 def get_container(case: Case, location: str | None, name: str) -> dict[str, Any] | None:
     """Get a container that suppose to store the given parameter."""
     if location:
         container_name = LOCATION_TO_CONTAINER[location]
     else:
-        for param in case.operation.definition.parameters:
+        for param in case.operation.iter_parameters():
             if param.name == name:
                 container_name = LOCATION_TO_CONTAINER[param.location]
                 break
@@ -304,6 +343,7 @@ def _get_response_by_status_code(
 
 
 def add_link(
+    resolver: RefResolver,
     responses: dict[StatusCode, dict[str, Any]],
     links_field: str,
     parameters: dict[str, str] | None,
@@ -313,6 +353,8 @@ def add_link(
     name: str | None = None,
 ) -> None:
     response = _get_response_by_status_code(responses, status_code)
+    if "$ref" in response:
+        _, response = resolver.resolve(response["$ref"])
     links_definition = response.setdefault(links_field, {})
     new_link: dict[str, str | dict[str, str]] = {}
     if parameters is not None:
@@ -326,8 +368,8 @@ def add_link(
         name = name or f"{target.method.upper()} {target.path}"
         # operationId is a dict lookup which is more efficient than using `operationRef`, since it
         # doesn't involve reference resolving when we will look up for this target during testing.
-        if "operationId" in target.definition.resolved:
-            new_link["operationId"] = target.definition.resolved["operationId"]
+        if "operationId" in target.definition.raw:
+            new_link["operationId"] = target.definition.raw["operationId"]
         else:
             new_link["operationRef"] = target.operation_reference
     # The name is arbitrary, so we don't really case what it is,

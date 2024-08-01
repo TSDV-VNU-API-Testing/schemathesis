@@ -2,11 +2,13 @@
 
 They all consist of primitive types and don't have references to schemas, app, etc.
 """
+
 from __future__ import annotations
+
 import logging
-from ..specs.openapi._vas import logger
 import re
-from dataclasses import dataclass, field
+import textwrap
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from ..code_samples import get_excluded_headers
@@ -17,6 +19,7 @@ from ..exceptions import (
     InternalError,
     InvalidRegularExpression,
     OperationSchemaError,
+    RecursiveReferenceError,
     RuntimeErrorType,
     SerializationError,
     UnboundPrefixError,
@@ -24,8 +27,10 @@ from ..exceptions import (
     format_exception,
     make_unique_by_key,
 )
+from ..generation import DataGenerationMethod
 from ..models import Case, Check, Interaction, Request, Response, Status, TestResult
-from ..transports import serialize_payload
+from ..specs.openapi._vas import logger
+from ..transports import deserialize_payload, serialize_payload
 
 if TYPE_CHECKING:
     import hypothesis.errors
@@ -36,6 +41,7 @@ if TYPE_CHECKING:
 class SerializedCase:
     # Case data
     id: str
+    generation_time: float
     path_parameters: dict[str, Any] | None
     headers: dict[str, Any] | None
     cookies: dict[str, Any] | None
@@ -62,15 +68,18 @@ class SerializedCase:
         serialized_body = _serialize_body(request_data.body)
         return cls(
             id=case.id,
+            generation_time=case.generation_time,
             path_parameters=case.path_parameters,
             headers=dict(case.headers) if case.headers is not None else None,
             cookies=case.cookies,
             query=case.query,
             body=serialized_body,
             media_type=case.media_type,
-            data_generation_method=case.data_generation_method.as_short_name()
-            if case.data_generation_method is not None
-            else None,
+            data_generation_method=(
+                case.data_generation_method.as_short_name()
+                if case.data_generation_method is not None
+                else None
+            ),
             method=case.method,
             url=request_data.url,
             path_template=case.path,
@@ -78,6 +87,14 @@ class SerializedCase:
             verify=verify,
             extra_headers=request_data.headers,
         )
+
+    def deserialize_body(self) -> bytes | None:
+        """Deserialize the test case body.
+
+        `SerializedCase` should be serializable to JSON, therefore body is encoded as base64 string
+        to support arbitrary binary data.
+        """
+        return deserialize_payload(self.body)
 
 
 def _serialize_body(body: str | bytes | None) -> str | None:
@@ -142,6 +159,25 @@ class SerializedCheck:
             context=check.context,
             history=history,
         )
+
+    @property
+    def title(self) -> str:
+        if self.context is not None:
+            return self.context.title
+        return f"Custom check failed: `{self.name}`"
+
+    @property
+    def formatted_message(self) -> str | None:
+        if self.context is not None:
+            if self.context.message:
+                message = self.context.message
+            else:
+                message = None
+        else:
+            message = self.message
+        if message is not None:
+            message = textwrap.indent(message, prefix="    ")
+        return message
 
 
 def _get_headers(headers: dict[str, Any] | CaseInsensitiveDict) -> dict[str, str]:
@@ -232,6 +268,11 @@ class SerializedError:
             type_ = RuntimeErrorType.HYPOTHESIS_DEADLINE_EXCEEDED
             message = str(exception).strip()
             extras = []
+        elif isinstance(exception, RecursiveReferenceError):
+            type_ = RuntimeErrorType.SCHEMA_UNSUPPORTED
+            message = str(exception).strip()
+            extras = []
+            title = "Unsupported Schema"
         elif isinstance(exception, hypothesis.errors.InvalidArgument) and str(
             exception
         ).startswith("Scalar "):
@@ -241,11 +282,20 @@ class SerializedError:
             message = f"Scalar type '{scalar_name}' is not recognized"
             extras = []
             title = "Unknown GraphQL Scalar"
+        elif isinstance(exception, hypothesis.errors.InvalidArgument) and (
+            str(exception).endswith("larger than Hypothesis is designed to handle")
+            or "can neber generate an example, because min_size is larger than Hypothesis suports."
+        ):
+            type_ = RuntimeErrorType.HYPOTHESIS_HEALTH_CHECK_LARGE_BASE_EXAMPLE
+            message = HEALTH_CHECK_MESSAGE_LARGE_BASE_EXAMPLE
+            extras = []
+            title = "Failed Health Check"
         elif isinstance(exception, hypothesis.errors.Unsatisfiable):
             type_ = RuntimeErrorType.HYPOTHESIS_UNSATISFIABLE
             message = f"{exception}. Possible reasons:"
             extras = [
                 "- Contradictory schema constraints, such as a minimum value exceeding the maximum.",
+                "- Invalid schema definitions for headers or cookies, for example allowing for non-ASCII characters.",
                 "- Excessive schema complexity, which hinders parameter generation.",
             ]
             title = "Schema Error"
@@ -278,7 +328,10 @@ class SerializedError:
         elif isinstance(exception, OperationSchemaError):
             if isinstance(exception, BodyInGetRequestError):
                 type_ = RuntimeErrorType.SCHEMA_BODY_IN_GET_REQUEST
-            elif isinstance(exception, InvalidRegularExpression):
+            elif (
+                isinstance(exception, InvalidRegularExpression)
+                and exception.is_valid_type
+            ):
                 type_ = RuntimeErrorType.SCHEMA_INVALID_REGULAR_EXPRESSION
             else:
                 type_ = RuntimeErrorType.SCHEMA_GENERIC
@@ -362,6 +415,7 @@ class SerializedInteraction:
     response: Response
     checks: list[SerializedCheck]
     status: Status
+    data_generation_method: DataGenerationMethod
     recorded_at: str
     case: Case
 
@@ -373,6 +427,7 @@ class SerializedInteraction:
             response=interaction.response,
             checks=[SerializedCheck.from_check(check) for check in interaction.checks],
             status=interaction.status,
+            data_generation_method=interaction.data_generation_method,
             recorded_at=interaction.recorded_at,
             case=interaction.case,
         )
@@ -439,3 +494,77 @@ def deduplicate_failures(checks: list[SerializedCheck]) -> list[SerializedCheck]
                 unique_checks.append(check)
                 seen.add(key)
     return unique_checks
+
+
+def _serialize_case(case: SerializedCase) -> dict[str, Any]:
+    return {
+        "id": case.id,
+        "generation_time": case.generation_time,
+        "verbose_name": case.verbose_name,
+        "path_template": case.path_template,
+        "path_parameters": stringify_path_parameters(case.path_parameters),
+        "query": prepare_query(case.query),
+        "cookies": case.cookies,
+        "media_type": case.media_type,
+    }
+
+
+def _serialize_response(response: Response) -> dict[str, Any]:
+    return {
+        "status_code": response.status_code,
+        "headers": response.headers,
+        "body": response.body,
+        "encoding": response.encoding,
+        "elapsed": response.elapsed,
+    }
+
+
+def _serialize_check(check: SerializedCheck) -> dict[str, Any]:
+    return {
+        "name": check.name,
+        "value": check.value,
+        "request": {
+            "method": check.request.method,
+            "uri": check.request.uri,
+            "body": check.request.body,
+            "headers": check.request.headers,
+        },
+        "response": (
+            _serialize_response(check.response) if check.response is not None else None
+        ),
+        "example": _serialize_case(check.example),
+        "message": check.message,
+        "context": asdict(check.context) if check.context is not None else None,  # type: ignore
+        "history": [
+            {
+                "case": _serialize_case(entry.case),
+                "response": _serialize_response(entry.response),
+            }
+            for entry in check.history
+        ],
+    }
+
+
+def stringify_path_parameters(path_parameters: dict[str, Any] | None) -> dict[str, str]:
+    """Cast all path parameter values to strings.
+
+    Path parameter values may be of arbitrary type, but to display them properly they should be casted to strings.
+    """
+    return {key: str(value) for key, value in (path_parameters or {}).items()}
+
+
+def prepare_query(query: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Convert all query values to list of strings.
+
+    Query parameters may be generated in different shapes, including integers, strings, list of strings, etc.
+    It can also be an object, if the schema contains an object, but `style` and `explode` combo is not applicable.
+    """
+
+    def to_list_of_strings(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return list(map(str, value))
+        if isinstance(value, str):
+            return [value]
+        return [str(value)]
+
+    return {key: to_list_of_strings(value) for key, value in (query or {}).items()}

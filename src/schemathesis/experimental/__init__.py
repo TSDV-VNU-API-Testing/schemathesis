@@ -1,5 +1,4 @@
 import os
-import threading
 from dataclasses import dataclass, field
 
 from ..constants import TRUE_VALUES
@@ -31,27 +30,8 @@ class Experiment:
 
 @dataclass
 class ExperimentSet:
-    _local_data: threading.local = field(default_factory=threading.local, repr=False)
-
-    def __post_init__(self) -> None:
-        self.available = set()
-        self.enabled = set()
-
-    @property
-    def available(self) -> set:
-        return self._local_data.available
-
-    @available.setter
-    def available(self, value: set) -> None:
-        self._local_data.available = value
-
-    @property
-    def enabled(self) -> set:
-        return self._local_data.enabled
-
-    @enabled.setter
-    def enabled(self, value: set) -> None:
-        self._local_data.enabled = value
+    available: set = field(default_factory=set)
+    enabled: set = field(default_factory=set)
 
     def create_experiment(
         self, name: str, verbose_name: str, env_var: str, description: str, discussion_url: str
@@ -91,4 +71,25 @@ OPEN_API_3_1 = GLOBAL_EXPERIMENTS.create_experiment(
     env_var="OPENAPI_3_1",
     description="Support for response validation",
     discussion_url="https://github.com/schemathesis/schemathesis/discussions/1822",
+)
+SCHEMA_ANALYSIS = GLOBAL_EXPERIMENTS.create_experiment(
+    name="schema-analysis",
+    verbose_name="Schema Analysis",
+    env_var="SCHEMA_ANALYSIS",
+    description="Analyzing API schemas via Schemathesis.io",
+    discussion_url="https://github.com/schemathesis/schemathesis/discussions/2056",
+)
+STATEFUL_TEST_RUNNER = GLOBAL_EXPERIMENTS.create_experiment(
+    name="stateful-test-runner",
+    verbose_name="New Stateful Test Runner",
+    env_var="STATEFUL_TEST_RUNNER",
+    description="State machine-based runner for stateful tests in CLI",
+    discussion_url="https://github.com/schemathesis/schemathesis/discussions/2262",
+)
+STATEFUL_ONLY = GLOBAL_EXPERIMENTS.create_experiment(
+    name="stateful-only",
+    verbose_name="Stateful Only",
+    env_var="STATEFUL_ONLY",
+    description="Run only stateful tests",
+    discussion_url="https://github.com/schemathesis/schemathesis/discussions/2262",
 )

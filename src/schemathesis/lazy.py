@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from inspect import signature
 from typing import Any, Callable, Generator
@@ -13,12 +14,16 @@ from pyrate_limiter import Limiter
 from pytest_subtests import SubTests, nullcontext
 
 from ._compat import MultipleFailures, get_interesting_origin
+from ._override import CaseOverride, check_no_override_mark, get_override_from_mark, set_override_mark
 from .auths import AuthStorage
 from .code_samples import CodeSampleStyle
 from .constants import FLAKY_FAILURE_MESSAGE, NOT_SET
-from .generation import DataGenerationMethodInput, GenerationConfig
 from .exceptions import CheckFailed, OperationSchemaError, SkipTest, get_grouped_exception
+from .filters import FilterSet, FilterValue, MatcherFunc, RegexValue, filter_set_from_components, is_deprecated
+from .generation import DataGenerationMethodInput, GenerationConfig
 from .hooks import HookDispatcher, HookScope
+from .internal.deprecation import warn_filtration_arguments
+from .internal.output import OutputConfig
 from .internal.result import Ok
 from .models import APIOperation
 from .schemas import BaseSchema
@@ -39,20 +44,115 @@ from .utils import (
 class LazySchema:
     fixture_name: str
     base_url: str | None | NotSet = NOT_SET
-    method: Filter | None = NOT_SET
-    endpoint: Filter | None = NOT_SET
-    tag: Filter | None = NOT_SET
-    operation_id: Filter | None = NOT_SET
     app: Any = NOT_SET
+    filter_set: FilterSet = field(default_factory=FilterSet)
     hooks: HookDispatcher = field(default_factory=lambda: HookDispatcher(scope=HookScope.SCHEMA))
     auth: AuthStorage = field(default_factory=AuthStorage)
     validate_schema: bool = True
-    skip_deprecated_operations: bool = False
     data_generation_methods: DataGenerationMethodInput | NotSet = NOT_SET
     generation_config: GenerationConfig | NotSet = NOT_SET
+    output_config: OutputConfig | NotSet = NOT_SET
     code_sample_style: CodeSampleStyle = CodeSampleStyle.default()
     rate_limiter: Limiter | None = None
     sanitize_output: bool = True
+
+    def include(
+        self,
+        func: MatcherFunc | None = None,
+        *,
+        name: FilterValue | None = None,
+        name_regex: str | None = None,
+        method: FilterValue | None = None,
+        method_regex: str | None = None,
+        path: FilterValue | None = None,
+        path_regex: str | None = None,
+        tag: FilterValue | None = None,
+        tag_regex: RegexValue | None = None,
+        operation_id: FilterValue | None = None,
+        operation_id_regex: RegexValue | None = None,
+    ) -> LazySchema:
+        """Include only operations that match the given filters."""
+        filter_set = self.filter_set.clone()
+        filter_set.include(
+            func,
+            name=name,
+            name_regex=name_regex,
+            method=method,
+            method_regex=method_regex,
+            path=path,
+            path_regex=path_regex,
+            tag=tag,
+            tag_regex=tag_regex,
+            operation_id=operation_id,
+            operation_id_regex=operation_id_regex,
+        )
+        return self.__class__(
+            fixture_name=self.fixture_name,
+            base_url=self.base_url,
+            app=self.app,
+            hooks=self.hooks,
+            auth=self.auth,
+            validate_schema=self.validate_schema,
+            data_generation_methods=self.data_generation_methods,
+            generation_config=self.generation_config,
+            output_config=self.output_config,
+            code_sample_style=self.code_sample_style,
+            rate_limiter=self.rate_limiter,
+            sanitize_output=self.sanitize_output,
+            filter_set=filter_set,
+        )
+
+    def exclude(
+        self,
+        func: MatcherFunc | None = None,
+        *,
+        name: FilterValue | None = None,
+        name_regex: str | None = None,
+        method: FilterValue | None = None,
+        method_regex: str | None = None,
+        path: FilterValue | None = None,
+        path_regex: str | None = None,
+        tag: FilterValue | None = None,
+        tag_regex: RegexValue | None = None,
+        operation_id: FilterValue | None = None,
+        operation_id_regex: RegexValue | None = None,
+        deprecated: bool = False,
+    ) -> LazySchema:
+        """Exclude operations that match the given filters."""
+        filter_set = self.filter_set.clone()
+        if deprecated:
+            if func is None:
+                func = is_deprecated
+            else:
+                filter_set.exclude(is_deprecated)
+        filter_set.exclude(
+            func,
+            name=name,
+            name_regex=name_regex,
+            method=method,
+            method_regex=method_regex,
+            path=path,
+            path_regex=path_regex,
+            tag=tag,
+            tag_regex=tag_regex,
+            operation_id=operation_id,
+            operation_id_regex=operation_id_regex,
+        )
+        return self.__class__(
+            fixture_name=self.fixture_name,
+            base_url=self.base_url,
+            app=self.app,
+            hooks=self.hooks,
+            auth=self.auth,
+            validate_schema=self.validate_schema,
+            data_generation_methods=self.data_generation_methods,
+            generation_config=self.generation_config,
+            output_config=self.output_config,
+            code_sample_style=self.code_sample_style,
+            rate_limiter=self.rate_limiter,
+            sanitize_output=self.sanitize_output,
+            filter_set=filter_set,
+        )
 
     def hook(self, hook: str | Callable) -> Callable:
         return self.hooks.register(hook)
@@ -67,20 +167,19 @@ class LazySchema:
         skip_deprecated_operations: bool | NotSet = NOT_SET,
         data_generation_methods: DataGenerationMethodInput | NotSet = NOT_SET,
         generation_config: GenerationConfig | NotSet = NOT_SET,
+        output_config: OutputConfig | NotSet = NOT_SET,
         code_sample_style: str | NotSet = NOT_SET,
     ) -> Callable:
-        if method is NOT_SET:
-            method = self.method
-        if endpoint is NOT_SET:
-            endpoint = self.endpoint
-        if tag is NOT_SET:
-            tag = self.tag
-        if operation_id is NOT_SET:
-            operation_id = self.operation_id
+        for name in ("method", "endpoint", "tag", "operation_id", "skip_deprecated_operations"):
+            value = locals()[name]
+            if value is not NOT_SET:
+                warn_filtration_arguments(name)
         if data_generation_methods is NOT_SET:
             data_generation_methods = self.data_generation_methods
         if generation_config is NOT_SET:
             generation_config = self.generation_config
+        if output_config is NOT_SET:
+            output_config = self.output_config
         if isinstance(code_sample_style, str):
             _code_sample_style = CodeSampleStyle.from_str(code_sample_style)
         else:
@@ -120,16 +219,39 @@ class LazySchema:
                     skip_deprecated_operations=skip_deprecated_operations,
                     data_generation_methods=data_generation_methods,
                     generation_config=generation_config,
+                    output_config=output_config,
                     code_sample_style=_code_sample_style,
                     app=self.app,
                     rate_limiter=self.rate_limiter,
                     sanitize_output=self.sanitize_output,
+                    filter_set=self.filter_set,
                 )
                 fixtures = get_fixtures(test, request, given_kwargs)
                 # Changing the node id is required for better reporting - the method and path will appear there
                 node_id = request.node._nodeid
                 settings = getattr(wrapped_test, "_hypothesis_internal_use_settings", None)
-                tests = list(schema.get_all_tests(test, settings, hooks=self.hooks, _given_kwargs=given_kwargs))
+
+                as_strategy_kwargs: Callable[[APIOperation], dict[str, Any]] | None = None
+
+                override = get_override_from_mark(test)
+                if override is not None:
+
+                    def as_strategy_kwargs(_operation: APIOperation) -> dict[str, Any]:
+                        nonlocal override
+
+                        return {
+                            location: entry for location, entry in override.for_operation(_operation).items() if entry
+                        }
+
+                tests = list(
+                    schema.get_all_tests(
+                        test,
+                        settings,
+                        hooks=self.hooks,
+                        as_strategy_kwargs=as_strategy_kwargs,
+                        _given_kwargs=given_kwargs,
+                    )
+                )
                 if not tests:
                     fail_on_no_matches(node_id)
                 request.session.testscollected += len(tests)
@@ -157,6 +279,26 @@ class LazySchema:
 
     def given(self, *args: GivenInput, **kwargs: GivenInput) -> Callable:
         return given_proxy(*args, **kwargs)
+
+    def override(
+        self,
+        *,
+        query: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        path_parameters: dict[str, str] | None = None,
+    ) -> Callable[[GenericTest], GenericTest]:
+        """Override Open API parameters with fixed values."""
+
+        def _add_override(test: GenericTest) -> GenericTest:
+            check_no_override_mark(test)
+            override = CaseOverride(
+                query=query or {}, headers=headers or {}, cookies=cookies or {}, path_parameters=path_parameters or {}
+            )
+            set_override_mark(test, override)
+            return test
+
+        return _add_override
 
 
 def _copy_marks(source: Callable, target: Callable) -> None:
@@ -275,6 +417,7 @@ def get_schema(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
+    filter_set: FilterSet,
     app: Any = None,
     test_function: GenericTest,
     hooks: HookDispatcher,
@@ -283,6 +426,7 @@ def get_schema(
     skip_deprecated_operations: bool | NotSet = NOT_SET,
     data_generation_methods: DataGenerationMethodInput | NotSet = NOT_SET,
     generation_config: GenerationConfig | NotSet = NOT_SET,
+    output_config: OutputConfig | NotSet = NOT_SET,
     code_sample_style: CodeSampleStyle,
     rate_limiter: Limiter | None,
     sanitize_output: bool,
@@ -291,20 +435,27 @@ def get_schema(
     schema = request.getfixturevalue(name)
     if not isinstance(schema, BaseSchema):
         raise ValueError(f"The given schema must be an instance of BaseSchema, got: {type(schema)}")
-    return schema.clone(
-        base_url=base_url,
+
+    filter_set = filter_set_from_components(
+        include=True,
         method=method,
         endpoint=endpoint,
         tag=tag,
         operation_id=operation_id,
+        skip_deprecated_operations=skip_deprecated_operations,
+        parent=schema.filter_set.merge(filter_set),
+    )
+    return schema.clone(
+        base_url=base_url,
+        filter_set=filter_set,
         app=app,
         test_function=test_function,
         hooks=schema.hooks.merge(hooks),
         auth=auth,
         validate_schema=validate_schema,
-        skip_deprecated_operations=skip_deprecated_operations,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         rate_limiter=rate_limiter,
         sanitize_output=sanitize_output,

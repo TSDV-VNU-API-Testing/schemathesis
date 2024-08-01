@@ -1,3 +1,4 @@
+import json
 import platform
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
 from jsonschema.validators import Draft4Validator
 
 import schemathesis
+from schemathesis.exceptions import SchemaError
 
 from .utils import as_param, get_schema, integer
 
@@ -213,6 +215,67 @@ def test_non_removable_recursive_references(empty_open_api_3_schema, definition)
 
     with pytest.raises(HypothesisRefResolutionError):
         test()
+
+
+def test_nested_recursive_references(empty_open_api_3_schema):
+    empty_open_api_3_schema["paths"]["/folders"] = {
+        "post": {
+            "description": "Test",
+            "summary": "Test",
+            "requestBody": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "$ref": "#/components/schemas/editFolder",
+                        }
+                    }
+                },
+                "required": True,
+            },
+            "responses": {"200": {"description": "Test"}},
+        }
+    }
+    empty_open_api_3_schema["components"] = {
+        "schemas": {
+            "editFolder": {
+                "type": "object",
+                "properties": {
+                    "parent": {"$ref": "#/components/schemas/Folder"},
+                },
+                "additionalProperties": False,
+            },
+            "Folder": {
+                "type": "object",
+                "properties": {
+                    "folders": {"$ref": "#/components/schemas/Folders"},
+                },
+                "additionalProperties": False,
+            },
+            "Folders": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "allOf": [
+                            {
+                                "minItems": 1,
+                                "type": "array",
+                                "items": {"$ref": "#/components/schemas/Folder"},
+                            }
+                        ]
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }
+    }
+    schema = schemathesis.from_dict(empty_open_api_3_schema, validate_schema=True)
+
+    @given(case=schema["/folders"]["POST"].as_strategy())
+    @settings(max_examples=1)
+    def test(case):
+        pass
+
+    test()
 
 
 def test_simple_dereference(testdir):
@@ -598,10 +661,9 @@ def test_complex_dereference(testdir, complex_schema):
         "tags": ["ancillaries"],
     }
     assert operation.definition.scope == f"{path.as_uri()}/root/paths/teapot.yaml#/TeapotCreatePath"
-    assert len(operation.definition.parameters) == 1
-    assert operation.definition.parameters[0].required
-    assert operation.definition.parameters[0].media_type == "application/json"
-    assert operation.definition.parameters[0].definition == body_definition
+    assert operation.body[0].required
+    assert operation.body[0].media_type == "application/json"
+    assert operation.body[0].definition == body_definition
 
 
 def test_remote_reference_to_yaml(swagger_20, schema_url):
@@ -661,3 +723,115 @@ def test_unique_objects_after_inlining(empty_open_api_3_schema):
     schema = schemathesis.from_dict(empty_open_api_3_schema)
     # Then inlined objects should be unique
     assert_unique_objects(schema["/test"]["post"].body[0].definition)
+
+
+REFERENCE_TO_PARAM = {
+    "/test": {
+        "get": {
+            "parameters": [
+                {
+                    "schema": {"$ref": "#/components/parameters/key"},
+                    "in": "query",
+                    "name": "key",
+                    "required": True,
+                }
+            ],
+            "responses": {"default": {"description": "Success"}},
+        }
+    }
+}
+
+
+def test_unresolvable_reference_during_generation(empty_open_api_3_schema, testdir):
+    # When there is a reference that can't be resolved during generation
+    # Then it should be properly reported
+    empty_open_api_3_schema["paths"] = REFERENCE_TO_PARAM
+    empty_open_api_3_schema["components"] = {
+        "parameters": {"key": {"$ref": "#/components/schemas/Key0"}},
+        "schemas": {
+            # The last key does not point anywhere
+            **{f"Key{idx}": {"$ref": f"#/components/schemas/Key{idx + 1}"} for idx in range(8)},
+        },
+    }
+    main = testdir.mkdir("root") / "main.json"
+    main.write_text(json.dumps(empty_open_api_3_schema), "utf8")
+    schema = schemathesis.from_path(str(main))
+
+    @given(case=schema["/test"]["GET"].as_strategy())
+    def test(case):
+        pass
+
+    with pytest.raises(SchemaError, match="Unresolvable JSON pointer in the schema: /components/schemas/Key8"):
+        test()
+
+
+@pytest.mark.parametrize(
+    "key, expected",
+    (
+        ("Key7", 'Can not generate data for query parameter "key"! Its schema should be an object, got None'),
+        ("Key8", "Unresolvable JSON pointer: 'components/schemas/Key8'"),
+    ),
+)
+def test_uncommon_type_in_generation(empty_open_api_3_schema, testdir, key, expected):
+    # When there is a reference that leads to a non-dictionary
+    # Then it should not lead to an error
+    empty_open_api_3_schema["paths"] = REFERENCE_TO_PARAM
+    empty_open_api_3_schema["components"] = {
+        "parameters": {"key": {"$ref": "#/components/schemas/Key0"}},
+        "schemas": {**{f"Key{idx}": {"$ref": f"#/components/schemas/Key{idx + 1}"} for idx in range(8)}, key: None},
+    }
+    main = testdir.mkdir("root") / "main.json"
+    main.write_text(json.dumps(empty_open_api_3_schema), "utf8")
+    schema = schemathesis.from_path(str(main))
+
+    @given(case=schema["/test"]["GET"].as_strategy())
+    def test(case):
+        pass
+
+    with pytest.raises(Exception, match=expected):
+        test()
+
+
+def test_global_security_schemes_with_custom_scope(testdir, empty_open_api_3_schema, cli, snapshot_cli):
+    # See GH-2300
+    empty_open_api_3_schema["components"] = {
+        "securitySchemes": {
+            "bearerAuth": {
+                "$ref": "components/securitySchemes/bearerAuth.json",
+            }
+        }
+    }
+    empty_open_api_3_schema["security"] = [{"bearerAuth": []}]
+    empty_open_api_3_schema["paths"] = {
+        "/test": {
+            "$ref": "paths/tests/test.json",
+        }
+    }
+    bearer = {"type": "http", "scheme": "bearer"}
+    operation = {
+        "get": {
+            "description": "Test",
+            "operationId": "test",
+            "responses": {"200": {"description": "OK"}},
+        }
+    }
+    root = testdir.mkdir("root")
+    raw_schema_path = root / "openapi.json"
+    raw_schema_path.write_text(json.dumps(empty_open_api_3_schema), "utf8")
+    components = (root / "components").mkdir()
+    paths = (root / "paths").mkdir()
+    tests = (paths / "tests").mkdir()
+    security_schemes = (components / "securitySchemes").mkdir()
+    (security_schemes / "bearerAuth.json").write_text(json.dumps(bearer), "utf8")
+    (tests / "test.json").write_text(json.dumps(operation), "utf8")
+
+    assert cli.run(str(raw_schema_path), "--dry-run", "--show-trace") == snapshot_cli
+
+
+def test_missing_file_in_resolution(testdir, empty_open_api_3_schema, cli, snapshot_cli):
+    empty_open_api_3_schema["paths"] = {"/test": {"$ref": "paths/test.json"}}
+    root = testdir.mkdir("root")
+    raw_schema_path = root / "openapi.json"
+    raw_schema_path.write_text(json.dumps(empty_open_api_3_schema), "utf8")
+
+    assert cli.run(str(raw_schema_path), "--dry-run", "--show-trace") == snapshot_cli

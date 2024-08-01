@@ -1,34 +1,38 @@
 from __future__ import annotations
 
 from random import Random
-from typing import Any, Callable, Generator, Iterable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable
 from urllib.parse import urlparse
 
-from .override import CaseOverride
-from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod, GenerationConfig
+from .._override import CaseOverride
 from ..constants import (
     DEFAULT_DEADLINE,
     DEFAULT_STATEFUL_RECURSION_LIMIT,
     HYPOTHESIS_IN_MEMORY_DATABASE_IDENTIFIER,
 )
-from ..internal.deprecation import deprecated_function
-from ..internal.datetime import current_datetime
-from ..internal.validation import file_exists
-from ..transports.auth import get_requests_auth
 from ..exceptions import SchemaError
+from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod, GenerationConfig
+from ..internal.datetime import current_datetime
+from ..internal.deprecation import deprecated_function
+from ..internal.validation import file_exists
 from ..loaders import load_app
 from ..specs.graphql import loaders as gql_loaders
 from ..specs.openapi import loaders as oas_loaders
 from ..targets import DEFAULT_TARGETS, Target
+from ..transports import RequestConfig
+from ..transports.auth import get_requests_auth
 from ..types import Filter, NotSet, RawAuth, RequestCert
+from .probes import ProbeConfig
 
 if TYPE_CHECKING:
-    from . import events
+    import hypothesis
+
     from ..models import CheckFunction
     from ..schemas import BaseSchema
-    from .impl import BaseRunner
+    from ..service.client import ServiceClient
     from ..stateful import Stateful
-    import hypothesis
+    from . import events
+    from .impl import BaseRunner
 
 
 @deprecated_function(removed_in="4.0", replacement="schemathesis.runner.from_schema")
@@ -75,6 +79,8 @@ def prepare(
     hypothesis_report_multiple_bugs: bool | None = None,
     hypothesis_suppress_health_check: list[hypothesis.HealthCheck] | None = None,
     hypothesis_verbosity: hypothesis.Verbosity | None = None,
+    probe_config: ProbeConfig | None = None,
+    service_client: ServiceClient | None = None,
 ) -> Generator[events.ExecutionEvent, None, None]:
     """Prepare a generator that will run test cases against the given API definition."""
     from ..checks import DEFAULT_CHECKS
@@ -128,6 +134,8 @@ def prepare(
         stateful_recursion_limit=stateful_recursion_limit,
         count_operations=count_operations,
         count_links=count_links,
+        probe_config=probe_config,
+        service_client=service_client,
     )
 
 
@@ -188,6 +196,8 @@ def execute_from_schema(
     stateful_recursion_limit: int = DEFAULT_STATEFUL_RECURSION_LIMIT,
     count_operations: bool = True,
     count_links: bool = True,
+    probe_config: ProbeConfig | None = None,
+    service_client: ServiceClient | None,
 ) -> Generator[events.ExecutionEvent, None, None]:
     """Execute tests for the given schema.
 
@@ -237,6 +247,8 @@ def execute_from_schema(
             stateful_recursion_limit=stateful_recursion_limit,
             count_operations=count_operations,
             count_links=count_links,
+            probe_config=probe_config,
+            service_client=service_client,
         ).execute()
     except SchemaError as error:
         yield events.InternalError.from_schema_error(error)
@@ -267,7 +279,7 @@ def load_schema(
     operation_id: Filter | None = None,
 ) -> BaseSchema:
     """Load schema via specified loader and parameters."""
-    loader_options = {
+    loader_options: dict[str, Any] = {
         key: value
         for key, value in (
             ("base_url", base_url),
@@ -341,9 +353,12 @@ def from_schema(
     stateful_recursion_limit: int = DEFAULT_STATEFUL_RECURSION_LIMIT,
     count_operations: bool = True,
     count_links: bool = True,
+    probe_config: ProbeConfig | None = None,
+    service_client: ServiceClient | None = None,
 ) -> BaseRunner:
-    from starlette.applications import Starlette
     import hypothesis
+    from starlette.applications import Starlette
+
     from ..checks import DEFAULT_CHECKS
     from .impl import (
         SingleThreadASGIRunner,
@@ -355,9 +370,16 @@ def from_schema(
     )
 
     checks = checks or DEFAULT_CHECKS
+    probe_config = probe_config or ProbeConfig()
 
     hypothesis_settings = hypothesis_settings or hypothesis.settings(deadline=DEFAULT_DEADLINE)
     generation_config = generation_config or GenerationConfig()
+    request_config = RequestConfig(
+        timeout=request_timeout,
+        tls_verify=request_tls_verify,
+        proxy=request_proxy,
+        cert=request_cert,
+    )
 
     # Use the same seed for all tests unless `derandomize=True` is used
     if seed is None and not hypothesis_settings.derandomize:
@@ -379,10 +401,7 @@ def from_schema(
                 headers=headers,
                 seed=seed,
                 workers_num=workers_num,
-                request_timeout=request_timeout,
-                request_tls_verify=request_tls_verify,
-                request_proxy=request_proxy,
-                request_cert=request_cert,
+                request_config=request_config,
                 exit_first=exit_first,
                 max_failures=max_failures,
                 started_at=started_at,
@@ -392,6 +411,8 @@ def from_schema(
                 stateful_recursion_limit=stateful_recursion_limit,
                 count_operations=count_operations,
                 count_links=count_links,
+                probe_config=probe_config,
+                service_client=service_client,
             )
         if isinstance(schema.app, Starlette):
             return ThreadPoolASGIRunner(
@@ -415,6 +436,8 @@ def from_schema(
                 stateful_recursion_limit=stateful_recursion_limit,
                 count_operations=count_operations,
                 count_links=count_links,
+                probe_config=probe_config,
+                service_client=service_client,
             )
         return ThreadPoolWSGIRunner(
             schema=schema,
@@ -438,6 +461,8 @@ def from_schema(
             stateful_recursion_limit=stateful_recursion_limit,
             count_operations=count_operations,
             count_links=count_links,
+            probe_config=probe_config,
+            service_client=service_client,
         )
     if not schema.app:
         return SingleThreadRunner(
@@ -452,10 +477,7 @@ def from_schema(
             override=override,
             headers=headers,
             seed=seed,
-            request_timeout=request_timeout,
-            request_tls_verify=request_tls_verify,
-            request_proxy=request_proxy,
-            request_cert=request_cert,
+            request_config=request_config,
             exit_first=exit_first,
             max_failures=max_failures,
             started_at=started_at,
@@ -465,6 +487,8 @@ def from_schema(
             stateful_recursion_limit=stateful_recursion_limit,
             count_operations=count_operations,
             count_links=count_links,
+            probe_config=probe_config,
+            service_client=service_client,
         )
     if isinstance(schema.app, Starlette):
         return SingleThreadASGIRunner(
@@ -488,6 +512,8 @@ def from_schema(
             stateful_recursion_limit=stateful_recursion_limit,
             count_operations=count_operations,
             count_links=count_links,
+            probe_config=probe_config,
+            service_client=service_client,
         )
     return SingleThreadWSGIRunner(
         schema=schema,
@@ -510,6 +536,8 @@ def from_schema(
         stateful_recursion_limit=stateful_recursion_limit,
         count_operations=count_operations,
         count_links=count_links,
+        probe_config=probe_config,
+        service_client=service_client,
     )
 
 

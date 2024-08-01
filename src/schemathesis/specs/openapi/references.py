@@ -1,10 +1,14 @@
 from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Callable, Dict, Union, overload
 from urllib.request import urlopen
 
 import jsonschema
 import requests
+from jsonschema.exceptions import RefResolutionError
 
 from ...constants import DEFAULT_RESPONSE_TIMEOUT
 from ...internal.copy import fast_deepcopy
@@ -53,6 +57,23 @@ class InliningResolver(jsonschema.RefResolver):
         )
         super().__init__(*args, **kwargs)
 
+    if sys.version_info >= (3, 11):
+
+        def resolve(self, ref: str) -> tuple[str, Any]:
+            try:
+                return super().resolve(ref)
+            except RefResolutionError as exc:
+                exc.add_note(ref)
+                raise
+    else:
+
+        def resolve(self, ref: str) -> tuple[str, Any]:
+            try:
+                return super().resolve(ref)
+            except RefResolutionError as exc:
+                exc.__notes__ = [ref]
+                raise
+
     @overload
     def resolve_all(self, item: dict[str, Any], recursion_level: int = 0) -> dict[str, Any]:
         pass
@@ -63,10 +84,13 @@ class InliningResolver(jsonschema.RefResolver):
 
     def resolve_all(self, item: JSONType, recursion_level: int = 0) -> JSONType:
         """Recursively resolve all references in the given object."""
+        resolve = self.resolve_all
         if isinstance(item, dict):
             ref = item.get("$ref")
-            if ref is not None and isinstance(ref, str):
-                with self.resolving(ref) as resolved:
+            if isinstance(ref, str):
+                url, resolved = self.resolve(ref)
+                self.push_scope(url)
+                try:
                     # If the next level of recursion exceeds the limit, then we need to copy it explicitly
                     # In other cases, this method create new objects for mutable types (dict & list)
                     next_recursion_level = recursion_level + 1
@@ -74,10 +98,18 @@ class InliningResolver(jsonschema.RefResolver):
                         copied = fast_deepcopy(resolved)
                         remove_optional_references(copied)
                         return copied
-                    return self.resolve_all(resolved, next_recursion_level)
-            return {key: self.resolve_all(sub_item, recursion_level) for key, sub_item in item.items()}
+                    return resolve(resolved, next_recursion_level)
+                finally:
+                    self.pop_scope()
+            return {
+                key: resolve(sub_item, recursion_level) if isinstance(sub_item, (dict, list)) else sub_item
+                for key, sub_item in item.items()
+            }
         if isinstance(item, list):
-            return [self.resolve_all(sub_item, recursion_level) for sub_item in item]
+            return [
+                self.resolve_all(sub_item, recursion_level) if isinstance(sub_item, (dict, list)) else sub_item
+                for sub_item in item
+            ]
         return item
 
     def resolve_in_scope(self, definition: dict[str, Any], scope: str) -> tuple[list[str], dict[str, Any]]:
@@ -87,7 +119,7 @@ class InliningResolver(jsonschema.RefResolver):
         if "$ref" in definition:
             self.push_scope(scope)
             try:
-                new_scope, definition = fast_deepcopy(self.resolve(definition["$ref"]))
+                new_scope, definition = self.resolve(definition["$ref"])
             finally:
                 self.pop_scope()
             scopes.append(new_scope)
@@ -184,27 +216,36 @@ def remove_optional_references(schema: dict[str, Any]) -> None:
             v = s.get(keyword)
             if v is not None:
                 elided = [sub for sub in v if not can_elide(sub)]
-                if len(elided) == 1 and "$ref" in elided[0]:
+                if len(elided) == 1 and contains_ref(elided[0]):
                     found.append(keyword)
         return found
 
     stack = [schema]
     while stack:
         definition = stack.pop()
-        # Optional properties
-        if "properties" in definition:
-            clean_properties(definition)
-        # Optional items
-        if "items" in definition:
-            clean_items(definition)
-        # Not required additional properties
-        if "additionalProperties" in definition:
-            clean_additional_properties(definition)
-        for k in on_single_item_combinators(definition):
-            del definition[k]
+        if isinstance(definition, dict):
+            # Optional properties
+            if "properties" in definition:
+                clean_properties(definition)
+            # Optional items
+            if "items" in definition:
+                clean_items(definition)
+            # Not required additional properties
+            if "additionalProperties" in definition:
+                clean_additional_properties(definition)
+            for k in on_single_item_combinators(definition):
+                del definition[k]
 
 
-def resolve_pointer(document: Any, pointer: str) -> dict | list | str | int | float | None:
+@dataclass
+class Unresolvable:
+    pass
+
+
+UNRESOLVABLE = Unresolvable()
+
+
+def resolve_pointer(document: Any, pointer: str) -> dict | list | str | int | float | None | Unresolvable:
     """Implementation is adapted from Rust's `serde-json` crate.
 
     Ref: https://github.com/serde-rs/json/blob/master/src/value/mod.rs#L751
@@ -212,7 +253,7 @@ def resolve_pointer(document: Any, pointer: str) -> dict | list | str | int | fl
     if not pointer:
         return document
     if not pointer.startswith("/"):
-        return None
+        return UNRESOLVABLE
 
     def replace(value: str) -> str:
         return value.replace("~1", "/").replace("~0", "~")
@@ -221,12 +262,14 @@ def resolve_pointer(document: Any, pointer: str) -> dict | list | str | int | fl
     target = document
     for token in tokens:
         if isinstance(target, dict):
-            target = target.get(token)
+            target = target.get(token, UNRESOLVABLE)
+            if target is UNRESOLVABLE:
+                return UNRESOLVABLE
         elif isinstance(target, list):
             try:
                 target = target[int(token)]
             except IndexError:
-                return None
+                return UNRESOLVABLE
         else:
-            return None
+            return UNRESOLVABLE
     return target

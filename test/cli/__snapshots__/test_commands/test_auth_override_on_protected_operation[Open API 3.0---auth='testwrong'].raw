@@ -9,6 +9,8 @@ Random seed: 42
 Workers: 1
 Collected API operations: 1
 Collected API links: 0
+API probing: SUCCESS
+Schema analysis: SKIP
 
 GET /api/basic F                                                          [100%]
 
@@ -37,6 +39,7 @@ Performed checks:
     content_type_conformance                        N / N passed          PASSED 
     response_headers_conformance                    N / N passed          PASSED 
     response_schema_conformance                     N / N passed          PASSED 
+    negative_data_rejection                         N / N passed          PASSED 
 
 WARNING: Most of the responses from `GET /api/basic` have a 401 status code. Did you specify proper API credentials?
 

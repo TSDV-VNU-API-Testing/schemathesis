@@ -1,14 +1,15 @@
 import json
 
 import pytest
-from hypothesis import assume, given, settings
+from hypothesis import Phase, assume, given, settings
 from hypothesis import strategies as st
 
 import schemathesis
-from schemathesis.generation import GenerationConfig
+from schemathesis.generation import GenerationConfig, HeaderConfig
 from schemathesis.specs.openapi import _hypothesis, formats
 from schemathesis.specs.openapi._hypothesis import get_case_strategy, is_valid_header, make_positive_strategy
 from schemathesis.specs.openapi.references import load_file
+from test.utils import assert_requests_call
 
 
 @pytest.fixture
@@ -151,6 +152,31 @@ def test_valid_headers(keywords):
     def test(headers):
         # Then headers are always valid
         assert is_valid_header(headers)
+
+    test()
+
+
+def test_configure_headers():
+    strategy = make_positive_strategy(
+        {
+            "type": "object",
+            "properties": {"X-Foo": {"type": "string"}},
+            "required": ["X-Foo"],
+            "additionalProperties": False,
+        },
+        "GET /users/",
+        "header",
+        None,
+        GenerationConfig(
+            headers=HeaderConfig(strategy=st.text(alphabet=st.characters(min_codepoint=65, max_codepoint=67)))
+        ),
+    )
+
+    @given(strategy)
+    def test(headers):
+        # Then headers are always valid
+        assert is_valid_header(headers)
+        assert set(headers["X-Foo"]) - {"A", "B", "C"} == set()
 
     test()
 
@@ -355,6 +381,74 @@ def test_missing_header_filter(empty_open_api_3_schema, mocker):
 
     # Then header filter should be used
     mocked.assert_called()
+
+
+def test_serializing_shared_header_parameters():
+    raw_schema = {
+        "swagger": "2.0",
+        "info": {"version": "1.0.0", "title": "Example API"},
+        "paths": {
+            "/data": {
+                "get": {
+                    "responses": {"default": {"description": "Ok"}},
+                },
+                "parameters": [
+                    {"name": "key", "type": "boolean", "in": "header"},
+                ],
+            },
+        },
+    }
+
+    schema = schemathesis.from_dict(raw_schema)
+
+    @given(schema["/data"]["GET"].as_strategy())
+    def test(case):
+        assert is_valid_header(case.headers)
+
+    test()
+
+
+def test_filter_urlencoded(empty_open_api_3_schema):
+    # When API schema allows for inputs that can't be serialized to `application/x-www-form-urlencoded`
+    # Then such examples should be filtered out during generation
+    empty_open_api_3_schema["paths"] = {
+        "/test": {
+            "post": {
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/x-www-form-urlencoded": {
+                            "schema": {
+                                "type": "array",
+                                "items": {
+                                    "properties": {
+                                        "value": {
+                                            "enum": ["A"],
+                                        },
+                                        "key": {
+                                            "enum": ["B"],
+                                        },
+                                    },
+                                    "required": ["key", "value"],
+                                    # Additional properties are allowed
+                                },
+                                "maxItems": 3,
+                            }
+                        }
+                    },
+                },
+                "responses": {"200": {"description": "OK"}},
+            },
+        }
+    }
+    schema = schemathesis.from_dict(empty_open_api_3_schema)
+
+    @given(schema["/test"]["POST"].as_strategy())
+    @settings(phases=[Phase.generate], max_examples=15, deadline=None)
+    def test(case):
+        assert_requests_call(case)
+
+    test()
 
 
 @pytest.mark.parametrize(

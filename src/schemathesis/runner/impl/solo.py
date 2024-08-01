@@ -1,10 +1,10 @@
 from __future__ import annotations
+
 import threading
 from dataclasses import dataclass
 from typing import Generator
 
 from ...models import TestResultSet
-from ...types import RequestCert
 from ...transports.auth import get_requests_auth
 from .. import events
 from .core import BaseRunner, asgi_test, get_session, network_test, wsgi_test
@@ -13,10 +13,6 @@ from .core import BaseRunner, asgi_test, get_session, network_test, wsgi_test
 @dataclass
 class SingleThreadRunner(BaseRunner):
     """Fast runner that runs tests sequentially in the main thread."""
-
-    request_tls_verify: bool | str = True
-    request_proxy: str | None = None
-    request_cert: RequestCert | None = None
 
     def _execute(
         self, results: TestResultSet, stop_event: threading.Event
@@ -41,10 +37,7 @@ class SingleThreadRunner(BaseRunner):
                 results=results,
                 session=session,
                 headers=self.headers,
-                request_timeout=self.request_timeout,
-                request_tls_verify=self.request_tls_verify,
-                request_proxy=self.request_proxy,
-                request_cert=self.request_cert,
+                request_config=self.request_config,
                 store_interactions=self.store_interactions,
                 dry_run=self.dry_run,
             )

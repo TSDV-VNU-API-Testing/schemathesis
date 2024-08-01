@@ -1,6 +1,6 @@
 from __future__ import annotations
+
 import enum
-import json
 import re
 import traceback
 from dataclasses import dataclass, field
@@ -11,12 +11,16 @@ from typing import TYPE_CHECKING, Any, Callable, Generator, NoReturn
 
 from .constants import SERIALIZERS_SUGGESTION_MESSAGE
 from .failures import FailureContext
+from .internal.output import truncate_json
 
 if TYPE_CHECKING:
     import hypothesis.errors
+    from graphql.error import GraphQLFormattedError
     from jsonschema import RefResolutionError, ValidationError
-    from .transports.responses import GenericResponse
+    from jsonschema import SchemaError as JsonSchemaError
     from requests import RequestException
+
+    from .transports.responses import GenericResponse
 
 
 class CheckFailed(AssertionError):
@@ -96,52 +100,83 @@ def get_grouped_exception(prefix: str, *exceptions: AssertionError) -> type[Chec
     return _get_hashed_exception("GroupedException", f"{prefix}{message}")
 
 
-def get_server_error(status_code: int) -> type[CheckFailed]:
+def get_server_error(prefix: str, status_code: int) -> type[CheckFailed]:
     """Return new exception for the Internal Server Error cases."""
-    name = f"ServerError{status_code}"
+    name = f"ServerError{prefix}{status_code}"
     return get_exception(name)
 
 
-def get_status_code_error(status_code: int) -> type[CheckFailed]:
+def get_status_code_error(prefix: str, status_code: int) -> type[CheckFailed]:
     """Return new exception for an unexpected status code."""
-    name = f"StatusCodeError{status_code}"
+    name = f"StatusCodeError{prefix}{status_code}"
     return get_exception(name)
 
 
-def get_response_type_error(expected: str, received: str) -> type[CheckFailed]:
+def get_response_type_error(prefix: str, expected: str, received: str) -> type[CheckFailed]:
     """Return new exception for an unexpected response type."""
-    name = f"SchemaValidationError{expected}_{received}"
+    name = f"SchemaValidationError{prefix}{expected}_{received}"
     return get_exception(name)
 
 
-def get_malformed_media_type_error(media_type: str) -> type[CheckFailed]:
-    name = f"MalformedMediaType{media_type}"
+def get_malformed_media_type_error(prefix: str, media_type: str) -> type[CheckFailed]:
+    name = f"MalformedMediaType{prefix}{media_type}"
     return get_exception(name)
 
 
-def get_missing_content_type_error() -> type[CheckFailed]:
+def get_missing_content_type_error(prefix: str) -> type[CheckFailed]:
     """Return new exception for a missing Content-Type header."""
-    return get_exception("MissingContentTypeError")
+    return get_exception(f"MissingContentTypeError{prefix}")
 
 
-def get_schema_validation_error(exception: ValidationError) -> type[CheckFailed]:
+def get_schema_validation_error(prefix: str, exception: ValidationError) -> type[CheckFailed]:
     """Return new exception for schema validation error."""
-    return _get_hashed_exception("SchemaValidationError", str(exception))
+    return _get_hashed_exception(f"SchemaValidationError{prefix}", str(exception))
 
 
-def get_response_parsing_error(exception: JSONDecodeError) -> type[CheckFailed]:
+def get_response_parsing_error(prefix: str, exception: JSONDecodeError) -> type[CheckFailed]:
     """Return new exception for response parsing error."""
-    return _get_hashed_exception("ResponseParsingError", str(exception))
+    return _get_hashed_exception(f"ResponseParsingError{prefix}", str(exception))
 
 
-def get_headers_error(message: str) -> type[CheckFailed]:
+def get_headers_error(prefix: str, message: str) -> type[CheckFailed]:
     """Return new exception for missing headers."""
-    return _get_hashed_exception("MissingHeadersError", message)
+    return _get_hashed_exception(f"MissingHeadersError{prefix}", message)
 
 
-def get_timeout_error(deadline: float | int) -> type[CheckFailed]:
+def get_negative_rejection_error(prefix: str, status: int) -> type[CheckFailed]:
+    return _get_hashed_exception(f"AcceptedNegativeDataError{prefix}", str(status))
+
+
+def get_use_after_free_error(free: str) -> type[CheckFailed]:
+    return _get_hashed_exception("UseAfterFreeError", free)
+
+
+def get_timeout_error(prefix: str, deadline: float | int) -> type[CheckFailed]:
     """Request took too long."""
-    return _get_hashed_exception("TimeoutError", str(deadline))
+    return _get_hashed_exception(f"TimeoutError{prefix}", str(deadline))
+
+
+def get_unexpected_graphql_response_error(type_: type) -> type[CheckFailed]:
+    """When GraphQL response is not a JSON object."""
+    return get_exception(f"UnexpectedGraphQLResponseError:{type_}")
+
+
+def get_grouped_graphql_error(errors: list[GraphQLFormattedError]) -> type[CheckFailed]:
+    # Canonicalize GraphQL errors by serializing them uniformly and sorting the outcomes
+    entries = []
+    for error in errors:
+        message = error["message"]
+        if "locations" in error:
+            message += ";locations:"
+            for location in sorted(error["locations"]):
+                message += f"({location['line'], location['column']})"
+        if "path" in error:
+            message += ";path:"
+            for chunk in error["path"]:
+                message += str(chunk)
+        entries.append(message)
+    entries.sort()
+    return _get_hashed_exception("GraphQLErrors", "".join(entries))
 
 
 SCHEMA_ERROR_SUGGESTION = "Ensure that the definition complies with the OpenAPI specification"
@@ -172,7 +207,7 @@ class OperationSchemaError(Exception):
             message = "Invalid schema definition"
         error_path = " -> ".join(str(entry) for entry in error.path) or "[root]"
         message += f"\n\nLocation:\n    {error_path}"
-        instance = truncated_json(error.instance)
+        instance = truncate_json(error.instance)
         message += f"\n\nProblematic definition:\n{instance}"
         message += "\n\nError details:\n    "
         # This default message contains the instance which we already printed
@@ -187,9 +222,11 @@ class OperationSchemaError(Exception):
     def from_reference_resolution_error(
         cls, error: RefResolutionError, path: str | None, method: str | None, full_path: str | None
     ) -> OperationSchemaError:
+        notes = getattr(error, "__notes__", [])
+        # Some exceptions don't have the actual reference in them, hence we add it manually via notes
+        pointer = f"'{notes[0]}'"
         message = "Unresolvable JSON pointer in the schema"
         # Get the pointer value from "Unresolvable JSON pointer: 'components/UnknownParameter'"
-        pointer = str(error).split(": ", 1)[-1]
         message += f"\n\nError details:\n    JSON pointer: {pointer}"
         message += "\n    This typically means that the schema is referencing a component that doesn't exist."
         message += f"\n\n{SCHEMA_ERROR_SUGGESTION}"
@@ -213,7 +250,19 @@ class BodyInGetRequestError(OperationSchemaError):
     __module__ = "builtins"
 
 
+@dataclass
+class OperationNotFound(KeyError):
+    message: str
+    item: str
+    __module__ = "builtins"
+
+    def __str__(self) -> str:
+        return self.message
+
+
+@dataclass
 class InvalidRegularExpression(OperationSchemaError):
+    is_valid_type: bool = True
     __module__ = "builtins"
 
     @classmethod
@@ -223,38 +272,34 @@ class InvalidRegularExpression(OperationSchemaError):
             message = f"Invalid regular expression. Pattern `{match.group(1)}` is not recognized - `{match.group(2)}`"
         return cls(message)
 
-
-def truncated_json(data: Any, max_lines: int = 10, max_width: int = 80) -> str:
-    # Convert JSON to string with indentation
-    indent = 4
-    serialized = json.dumps(data, indent=indent)
-
-    # Split string by lines
-
-    lines = [line[: max_width - 3] + "..." if len(line) > max_width else line for line in serialized.split("\n")]
-
-    if len(lines) <= max_lines:
-        return "\n".join(lines)
-
-    truncated_lines = lines[: max_lines - 1]
-    indentation = " " * indent
-    truncated_lines.append(f"{indentation}// Output truncated...")
-    truncated_lines.append(lines[-1])
-
-    return "\n".join(truncated_lines)
+    @classmethod
+    def from_schema_error(cls, error: JsonSchemaError, *, from_examples: bool) -> InvalidRegularExpression:
+        if from_examples:
+            message = (
+                "Failed to generate test cases from examples for this API operation because of "
+                f"unsupported regular expression `{error.instance}`"
+            )
+        else:
+            message = (
+                "Failed to generate test cases for this API operation because of "
+                f"unsupported regular expression `{error.instance}`"
+            )
+        return cls(message)
 
 
-MAX_PAYLOAD_SIZE = 512
+class InvalidHeadersExample(OperationSchemaError):
+    __module__ = "builtins"
 
-
-def prepare_response_payload(payload: str, max_size: int = MAX_PAYLOAD_SIZE) -> str:
-    if payload.endswith("\r\n"):
-        payload = payload[:-2]
-    elif payload.endswith("\n"):
-        payload = payload[:-1]
-    if len(payload) > max_size:
-        payload = payload[:max_size] + " // Output truncated..."
-    return payload
+    @classmethod
+    def from_headers(cls, headers: dict[str, str]) -> InvalidHeadersExample:
+        message = (
+            "Failed to generate test cases from examples for this API operation because of "
+            "some header examples are invalid:\n"
+        )
+        for key, value in headers.items():
+            message += f"\n  - {key!r}={value!r}"
+        message += "\n\nEnsure the header examples comply with RFC 7230, Section 3.2"
+        return cls(message)
 
 
 class DeadlineExceeded(Exception):
@@ -269,6 +314,12 @@ class DeadlineExceeded(Exception):
         return cls(
             f"Test running time is too slow! It took {runtime:.2f}ms, which exceeds the deadline of {deadline:.2f}ms.\n"
         )
+
+
+class RecursiveReferenceError(Exception):
+    """Recursive reference is impossible to resolve due to current limitations."""
+
+    __module__ = "builtins"
 
 
 @enum.unique
@@ -289,6 +340,7 @@ class RuntimeErrorType(str, enum.Enum):
 
     SCHEMA_BODY_IN_GET_REQUEST = "schema_body_in_get_request"
     SCHEMA_INVALID_REGULAR_EXPRESSION = "schema_invalid_regular_expression"
+    SCHEMA_UNSUPPORTED = "schema_unsupported"
     SCHEMA_GENERIC = "schema_generic"
 
     SERIALIZATION_NOT_POSSIBLE = "serialization_not_possible"
@@ -296,6 +348,16 @@ class RuntimeErrorType(str, enum.Enum):
 
     # Unclassified
     UNCLASSIFIED = "unclassified"
+
+    @property
+    def has_useful_traceback(self) -> bool:
+        return self not in (
+            RuntimeErrorType.SCHEMA_BODY_IN_GET_REQUEST,
+            RuntimeErrorType.SCHEMA_INVALID_REGULAR_EXPRESSION,
+            RuntimeErrorType.SCHEMA_UNSUPPORTED,
+            RuntimeErrorType.SCHEMA_GENERIC,
+            RuntimeErrorType.SERIALIZATION_NOT_POSSIBLE,
+        )
 
 
 @enum.unique
@@ -321,6 +383,7 @@ class SchemaErrorType(str, enum.Enum):
     OPEN_API_INVALID_SCHEMA = "open_api_invalid_schema"
     OPEN_API_UNSPECIFIED_VERSION = "open_api_unspecified_version"
     OPEN_API_UNSUPPORTED_VERSION = "open_api_unsupported_version"
+    OPEN_API_EXPERIMENTAL_VERSION = "open_api_experimental_version"
 
     # GraphQL validation
     GRAPHQL_INVALID_SCHEMA = "graphql_invalid_schema"
@@ -396,6 +459,7 @@ class UnboundPrefixError(SerializationError):
         super().__init__(UNBOUND_PREFIX_MESSAGE_TEMPLATE.format(prefix=prefix))
 
 
+@dataclass
 class SerializationNotPossible(SerializationError):
     """Not possible to serialize to any of the media types defined for some API operation.
 
@@ -403,15 +467,21 @@ class SerializationNotPossible(SerializationError):
     media type that Schemathesis knows how to serialize data to.
     """
 
+    message: str
+    media_types: list[str]
+
     __module__ = "builtins"
+
+    def __str__(self) -> str:
+        return self.message
 
     @classmethod
     def from_media_types(cls, *media_types: str) -> SerializationNotPossible:
-        return cls(SERIALIZATION_NOT_POSSIBLE_MESSAGE.format(", ".join(media_types)))
+        return cls(SERIALIZATION_NOT_POSSIBLE_MESSAGE.format(", ".join(media_types)), media_types=list(media_types))
 
     @classmethod
     def for_media_type(cls, media_type: str) -> SerializationNotPossible:
-        return cls(SERIALIZATION_FOR_TYPE_IS_NOT_POSSIBLE_MESSAGE.format(media_type))
+        return cls(SERIALIZATION_FOR_TYPE_IS_NOT_POSSIBLE_MESSAGE.format(media_type), media_types=[media_type])
 
 
 class UsageError(Exception):
@@ -450,25 +520,35 @@ def remove_ssl_line_number(text: str) -> str:
     return re.sub(r"\(_ssl\.c:\d+\)", "", text)
 
 
+def _clean_inner_request_message(message: Any) -> str:
+    if isinstance(message, str) and message.startswith("HTTPConnectionPool"):
+        return re.sub(r"HTTPConnectionPool\(.+?\): ", "", message).rstrip(".")
+    return str(message)
+
+
 def extract_requests_exception_details(exc: RequestException) -> tuple[str, list[str]]:
-    from requests.exceptions import SSLError, ConnectionError, ChunkedEncodingError
+    from requests.exceptions import ChunkedEncodingError, ConnectionError, SSLError
     from urllib3.exceptions import MaxRetryError
 
     if isinstance(exc, SSLError):
         message = "SSL verification problem"
         reason = str(exc.args[0].reason)
-        extra = [remove_ssl_line_number(reason)]
+        extra = [remove_ssl_line_number(reason).strip()]
     elif isinstance(exc, ConnectionError):
         message = "Connection failed"
         inner = exc.args[0]
         if isinstance(inner, MaxRetryError) and inner.reason is not None:
-            if ":" not in inner.reason.args[0]:
-                reason = inner.reason.args[0]
+            arg = inner.reason.args[0]
+            if isinstance(arg, str):
+                if ":" not in arg:
+                    reason = arg
+                else:
+                    _, reason = arg.split(":", maxsplit=1)
             else:
-                _, reason = inner.reason.args[0].split(":", maxsplit=1)
+                reason = f"Max retries exceeded with url: {inner.url}"
             extra = [reason.strip()]
         else:
-            extra = [" ".join(map(str, inner.args))]
+            extra = [" ".join(map(_clean_inner_request_message, inner.args))]
     elif isinstance(exc, ChunkedEncodingError):
         message = "Connection broken. The server declared chunked encoding but sent an invalid chunk"
         extra = [str(exc.args[0].args[1])]

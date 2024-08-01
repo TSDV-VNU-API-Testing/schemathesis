@@ -1,6 +1,7 @@
 import click
 
 from ...runner import events
+from ...stateful import events as stateful_events
 from ..context import ExecutionContext
 from ..handlers import EventHandler
 from . import default
@@ -22,7 +23,13 @@ def handle_after_execution(
     context.operations_processed += 1
     context.results.append(event.result)
     context.hypothesis_output.extend(event.hypothesis_output)
-    default.display_execution_result(context, event)
+    default.display_execution_result(context, event.status.value)
+
+
+def handle_stateful_event(context: ExecutionContext, event: events.StatefulEvent) -> None:
+    if isinstance(event.data, stateful_events.RunStarted):
+        click.echo()
+    default.handle_stateful_event(context, event)
 
 
 class ShortOutputStyleHandler(EventHandler):
@@ -35,15 +42,27 @@ class ShortOutputStyleHandler(EventHandler):
         """
         if isinstance(event, events.Initialized):
             default.handle_initialized(context, event)
-        if isinstance(event, events.BeforeExecution):
+        elif isinstance(event, events.BeforeProbing):
+            default.handle_before_probing(context, event)
+        elif isinstance(event, events.AfterProbing):
+            default.handle_after_probing(context, event)
+        elif isinstance(event, events.BeforeAnalysis):
+            default.handle_before_analysis(context, event)
+        elif isinstance(event, events.AfterAnalysis):
+            default.handle_after_analysis(context, event)
+        elif isinstance(event, events.BeforeExecution):
             handle_before_execution(context, event)
-        if isinstance(event, events.AfterExecution):
+        elif isinstance(event, events.AfterExecution):
             handle_after_execution(context, event)
-        if isinstance(event, events.Finished):
+        elif isinstance(event, events.Finished):
             if context.operations_count == context.operations_processed:
                 click.echo()
             default.handle_finished(context, event)
-        if isinstance(event, events.Interrupted):
+        elif isinstance(event, events.Interrupted):
             default.handle_interrupted(context, event)
-        if isinstance(event, events.InternalError):
+        elif isinstance(event, events.InternalError):
             default.handle_internal_error(context, event)
+        elif isinstance(event, events.StatefulEvent):
+            handle_stateful_event(context, event)
+        elif isinstance(event, events.AfterStatefulExecution):
+            default.handle_after_stateful_execution(context, event)

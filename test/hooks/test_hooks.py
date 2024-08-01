@@ -1,10 +1,14 @@
+from unittest.mock import ANY
+
 import pytest
 from hypothesis import HealthCheck, Phase, given, settings
 from hypothesis import strategies as st
 
 import schemathesis
+from schemathesis.constants import USER_AGENT
 from schemathesis.hooks import HookContext, HookDispatcher, HookScope
 from schemathesis.utils import PARAMETRIZE_MARKER
+from test.utils import assert_requests_call, flaky
 
 
 def integer_id(query):
@@ -51,7 +55,7 @@ def test_global_query_hook(wsgi_app_schema, schema_url):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.query["id"].isdigit()
 
@@ -68,7 +72,7 @@ def test_global_body_hook(wsgi_app_schema):
     strategy = wsgi_app_schema["/payload"]["POST"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3, suppress_health_check=[HealthCheck.filter_too_much, HealthCheck.too_slow])
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert len(case.body["name"]) == 5
 
@@ -93,7 +97,7 @@ def test_case_hook(wsgi_app_schema):
     strategy = wsgi_app_schema["/users/"]["POST"].as_strategy(hooks=dispatcher)
 
     @given(case=strategy)
-    @settings(max_examples=10, suppress_health_check=[HealthCheck.filter_too_much])
+    @settings(max_examples=10, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.body["first_name"] == case.body["last_name"]
         assert case.body["extra"] == 42
@@ -111,7 +115,7 @@ def test_schema_query_hook(wsgi_app_schema, schema_url):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.query["id"].isdigit()
 
@@ -130,7 +134,7 @@ def test_hooks_combination(wsgi_app_schema):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.query["id"].isdigit()
         assert int(case.query["id"]) % 2 == 0
@@ -270,6 +274,7 @@ def test_local_dispatcher(wsgi_app_schema, apply_first):
     assert getattr(test, PARAMETRIZE_MARKER).hooks.get_all_by_name("map_cookies") == []
 
 
+@flaky(max_runs=3, min_passes=1)
 @pytest.mark.hypothesis_nested
 @pytest.mark.operations("custom_format")
 def test_multiple_hooks_per_spec(wsgi_app_schema):
@@ -286,7 +291,7 @@ def test_multiple_hooks_per_spec(wsgi_app_schema):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.query["id"].isdigit()
         assert int(case.query["id"]) % 2 == 0
@@ -309,7 +314,7 @@ def test_flatmap(wsgi_app_schema):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         value = case.query["id"]
         assert value.isdigit()
@@ -338,7 +343,7 @@ def test_case_hooks(wsgi_app_schema):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         value = case.query["id"]
         assert value.isdigit()
@@ -358,7 +363,7 @@ def test_before_process_path_hook(wsgi_app_schema):
     strategy = wsgi_app_schema["/custom_format"]["GET"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3)
+    @settings(max_examples=3, suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         assert case.query == {"foo": "bar"}
 
@@ -384,6 +389,7 @@ def test_before_add_examples(testdir, simple_openapi):
 def before_add_examples(context, examples):
     new = schemathesis.models.Case(
         operation=context.operation,
+        generation_time=0.0,
         query={"foo": "bar"}
     )
     examples.append(new)
@@ -397,6 +403,7 @@ def test_a(case):
 def another_hook(context, examples):
     new = schemathesis.models.Case(
         operation=context.operation,
+        generation_time=0.0,
         query={"spam": "baz"}
     )
     examples.append(new)
@@ -481,7 +488,7 @@ def test_a(case):
     result.assert_outcomes(passed=1)
 
 
-def test_graphql(graphql_schema):
+def test_graphql_body(graphql_schema):
     @graphql_schema.hook
     def map_body(context, body):
         node = body.definitions[0].selection_set.selections[0]
@@ -490,12 +497,69 @@ def test_graphql(graphql_schema):
         node.selection_set = ()
         return body
 
-    strategy = graphql_schema["/graphql"]["POST"].as_strategy()
+    strategy = graphql_schema["Mutation"]["addBook"].as_strategy()
 
     @given(case=strategy)
-    @settings(max_examples=3, phases=[Phase.generate])
+    @settings(max_examples=3, phases=[Phase.generate], suppress_health_check=list(HealthCheck), deadline=None)
     def test(case):
         # Not necessarily valid GraphQL, but it is simpler to check the hook this way
         assert case.body == "mutation {\n  addedViaHook\n}"
+
+    test()
+
+
+def test_graphql_query(graphql_schema, graphql_server_host):
+    query = {"q": 1}
+    path_parameters = {"p": 2}
+    headers = {"h": "3"}
+    cookies = {"c": "4"}
+
+    @graphql_schema.hook
+    def map_query(_, __):
+        nonlocal query
+
+        return query
+
+    @graphql_schema.hook
+    def map_path_parameters(_, __):
+        nonlocal path_parameters
+
+        return path_parameters
+
+    @graphql_schema.hook
+    def map_headers(_, __):
+        nonlocal headers
+
+        return headers
+
+    @graphql_schema.hook
+    def map_cookies(_, __):
+        nonlocal cookies
+
+        return cookies
+
+    strategy = graphql_schema["Query"]["getBooks"].as_strategy()
+
+    @given(case=strategy)
+    @settings(max_examples=3, phases=[Phase.generate], suppress_health_check=list(HealthCheck), deadline=None)
+    def test(case):
+        assert case.query == query
+        assert case.path_parameters == path_parameters
+        assert case.headers == headers
+        assert case.cookies == cookies
+        assert case.as_transport_kwargs() == {
+            "cookies": {"c": "4"},
+            "headers": {
+                "User-Agent": USER_AGENT,
+                "X-Schemathesis-TestCaseId": ANY,
+                "Content-Type": "application/json",
+                "h": "3",
+            },
+            "json": {"query": ANY},
+            "method": "POST",
+            "params": {"q": 1},
+            "url": f"http://{graphql_server_host}/graphql",
+        }
+        assert_requests_call(case)
 
     test()

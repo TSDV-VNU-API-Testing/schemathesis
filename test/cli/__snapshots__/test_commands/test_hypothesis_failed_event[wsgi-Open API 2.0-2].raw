@@ -9,6 +9,8 @@ Random seed: 42
 Workers: 2
 Collected API operations: 2
 Collected API links: 0
+API probing: SKIP
+Schema analysis: SKIP
 
 ??
 
@@ -30,4 +32,4 @@ Performed checks:
 Tip: Use the `--report` CLI option to visualize test results via Schemathesis.io.
 We run additional conformance checks on reports from public repos.
 
-========================= in 1.00s =========================
+========================= in 1.00s =============================================

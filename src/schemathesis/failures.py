@@ -1,10 +1,14 @@
 from __future__ import annotations
+
 import textwrap
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from schemathesis.internal.output import OutputConfig
 
 if TYPE_CHECKING:
+    from graphql.error import GraphQLFormattedError
     from jsonschema import ValidationError
 
 
@@ -40,16 +44,27 @@ class ValidationErrorContext(FailureContext):
         return ("/".join(map(str, self.schema_path)),)
 
     @classmethod
-    def from_exception(cls, exc: ValidationError) -> ValidationErrorContext:
-        from .exceptions import truncated_json
+    def from_exception(
+        cls, exc: ValidationError, *, output_config: OutputConfig | None = None
+    ) -> ValidationErrorContext:
+        from .internal.output import truncate_json
 
-        schema = textwrap.indent(truncated_json(exc.schema, max_lines=20), prefix="    ")
-        value = textwrap.indent(truncated_json(exc.instance, max_lines=20), prefix="    ")
-        message = f"{exc.message}\n\nSchema:\n\n{schema}\n\nValue:\n\n{value}"
+        output_config = OutputConfig.from_parent(output_config, max_lines=20)
+        schema = textwrap.indent(truncate_json(exc.schema, config=output_config), prefix="    ")
+        value = textwrap.indent(truncate_json(exc.instance, config=output_config), prefix="    ")
+        schema_path = list(exc.absolute_schema_path)
+        if len(schema_path) > 1:
+            # Exclude the last segment, which is already in the schema
+            schema_title = "Schema at "
+            for segment in schema_path[:-1]:
+                schema_title += f"/{segment}"
+        else:
+            schema_title = "Schema"
+        message = f"{exc.message}\n\n{schema_title}:\n\n{schema}\n\nValue:\n\n{value}"
         return cls(
             message=message,
             validation_message=exc.message,
-            schema_path=list(exc.absolute_schema_path),
+            schema_path=schema_path,
             schema=exc.schema,
             instance_path=list(exc.absolute_path),
             instance=exc.instance,
@@ -117,6 +132,26 @@ class UndefinedContentType(FailureContext):
 
 
 @dataclass(repr=False)
+class AcceptedNegativeData(FailureContext):
+    """Response with negative data was accepted."""
+
+    message: str
+    title: str = "Accepted negative data"
+    type: str = "accepted_negative_data"
+
+
+@dataclass(repr=False)
+class UseAfterFree(FailureContext):
+    """Resource was used after a successful DELETE operation on it."""
+
+    message: str
+    free: str
+    usage: str
+    title: str = "Use after free"
+    type: str = "use_after_free"
+
+
+@dataclass(repr=False)
 class UndefinedStatusCode(FailureContext):
     """Response has a status code that is not defined in the schema."""
 
@@ -177,3 +212,32 @@ class RequestTimeout(FailureContext):
     message: str
     title: str = "Response timeout"
     type: str = "request_timeout"
+
+
+@dataclass(repr=False)
+class UnexpectedGraphQLResponse(FailureContext):
+    """GraphQL response is not a JSON object."""
+
+    message: str
+    title: str = "Unexpected GraphQL Response"
+    type: str = "graphql_unexpected_response"
+
+
+@dataclass(repr=False)
+class GraphQLClientError(FailureContext):
+    """GraphQL query has not been executed."""
+
+    message: str
+    errors: list[GraphQLFormattedError]
+    title: str = "GraphQL client error"
+    type: str = "graphql_client_error"
+
+
+@dataclass(repr=False)
+class GraphQLServerError(FailureContext):
+    """GraphQL response indicates at least one server error."""
+
+    message: str
+    errors: list[GraphQLFormattedError]
+    title: str = "GraphQL server error"
+    type: str = "graphql_server_error"

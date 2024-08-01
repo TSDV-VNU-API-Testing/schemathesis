@@ -1,7 +1,5 @@
 import pytest
 
-from schemathesis._dependency_versions import IS_PYTEST_ABOVE_54
-
 from .utils import integer
 
 
@@ -97,7 +95,7 @@ def test_(request, case):
             },
         },
         method="POST",
-        endpoint="/v1/foo",
+        path="/v1/foo",
     )
     result = testdir.runpytest("-v", "-s")
     result.assert_outcomes(passed=1)
@@ -131,7 +129,7 @@ def test_b(request, case):
             }
         },
         method="POST",
-        endpoint="/v1/foo",
+        path="/v1/foo",
         tag="foo",
     )
     result = testdir.runpytest("-v", "-s")
@@ -202,11 +200,7 @@ def test_(request, case):
     )
     result = testdir.runpytest("-v")
     # Then it should be an error
-    if IS_PYTEST_ABOVE_54:
-        key = "errors"
-    else:
-        key = "error"
-    result.assert_outcomes(**{key: 1})
+    result.assert_outcomes(errors=1)
     result.stdout.re_match_lines(
         [
             r"E *Failed: Test function test_error_on_no_matches.py::test_ does not "

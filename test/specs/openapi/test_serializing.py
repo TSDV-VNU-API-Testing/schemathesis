@@ -1,7 +1,5 @@
-import cgi
-import io
 import json
-from test.utils import assert_requests_call
+from email.message import EmailMessage
 from urllib.parse import quote, unquote
 
 import pytest
@@ -23,6 +21,7 @@ from schemathesis.specs.openapi.serialization import (
     matrix_object,
     matrix_primitive,
 )
+from test.utils import assert_requests_call
 
 PRIMITIVE_SCHEMA = {"type": "integer", "enum": [1]}
 NULLABLE_PRIMITIVE_SCHEMA = {"type": "integer", "enum": [1], "nullable": True}
@@ -557,26 +556,25 @@ def test_unusual_form_schema(empty_open_api_3_schema, type_name):
         # Then it should lead to a valid network request
         assert_requests_call(case)
         # And should contain the proper content type
-        kwargs = case.as_requests_kwargs()
+        kwargs = case.as_transport_kwargs()
         content_type = kwargs["headers"]["Content-Type"]
         assert content_type.startswith("multipart/form-data; boundary=")
         # And data is a valid multipart
-        _, options = cgi.parse_header(content_type)
-        options["boundary"] = options["boundary"].encode()
-        options["CONTENT-LENGTH"] = len(kwargs["data"])
-        cgi.parse_multipart(io.BytesIO(kwargs["data"]), options)
+        message = EmailMessage()
+        message.attach(kwargs["data"])
+        assert message.is_multipart()
         # When custom headers are passed
-        headers = case.as_requests_kwargs(headers={"Authorization": "Bearer FOO"})["headers"]
+        headers = case.as_transport_kwargs(headers={"Authorization": "Bearer FOO"})["headers"]
         # Then content type should be valid
         assert headers["Content-Type"].startswith("multipart/form-data; boundary=")
         # And the original headers are preserved
         assert headers["Authorization"] == "Bearer FOO"
         # When the Content-Type header is passed explicitly
-        headers = case.as_requests_kwargs(headers={"Content-Type": "text/plain"})["headers"]
+        headers = case.as_transport_kwargs(headers={"Content-Type": "text/plain"})["headers"]
         # Then it should be preferred
         assert headers["Content-Type"] == "text/plain"
         # And it should be case-insensitive
-        headers = case.as_requests_kwargs(headers={"content-type": "text/plain"})["headers"]
+        headers = case.as_transport_kwargs(headers={"content-type": "text/plain"})["headers"]
         assert headers["content-type"] == "text/plain"
         assert list(headers) == ["content-type", "User-Agent", SCHEMATHESIS_TEST_CASE_HEADER]
 

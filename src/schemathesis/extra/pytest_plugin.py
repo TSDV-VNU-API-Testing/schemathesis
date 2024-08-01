@@ -1,23 +1,35 @@
 from __future__ import annotations
+
+import unittest
 from contextlib import contextmanager
 from functools import partial
-from typing import Any, Callable, Generator, Type, TypeVar, cast
+from typing import Any, Callable, Generator, Type, cast
 
 import pytest
 from _pytest import fixtures, nodes
 from _pytest.config import hookimpl
 from _pytest.fixtures import FuncFixtureInfo
-from _pytest.nodes import Node
 from _pytest.python import Class, Function, FunctionDefinition, Metafunc, Module, PyCollector
 from hypothesis import reporting
-from hypothesis.errors import InvalidArgument
-from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
+from hypothesis.errors import InvalidArgument, Unsatisfiable
+from jsonschema.exceptions import SchemaError
 
-from .._hypothesis import create_test
-from ..constants import RECURSIVE_REFERENCE_ERROR_MESSAGE
-from .._dependency_versions import IS_PYTEST_ABOVE_7, IS_PYTEST_ABOVE_54
-from ..exceptions import OperationSchemaError, SkipTest
-from ..internal.result import Result, Ok
+from .._dependency_versions import IS_PYTEST_ABOVE_7, IS_PYTEST_ABOVE_8
+from .._override import get_override_from_mark
+from ..constants import (
+    GIVEN_AND_EXPLICIT_EXAMPLES_ERROR_MESSAGE,
+    RECURSIVE_REFERENCE_ERROR_MESSAGE,
+    SERIALIZERS_SUGGESTION_MESSAGE,
+)
+from ..exceptions import (
+    InvalidHeadersExample,
+    InvalidRegularExpression,
+    OperationSchemaError,
+    SerializationNotPossible,
+    SkipTest,
+    UsageError,
+)
+from ..internal.result import Ok, Result
 from ..models import APIOperation
 from ..utils import (
     PARAMETRIZE_MARKER,
@@ -29,14 +41,6 @@ from ..utils import (
     merge_given_args,
     validate_given_args,
 )
-
-T = TypeVar("T", bound=Node)
-
-
-def create(cls: type[T], *args: Any, **kwargs: Any) -> T:
-    if IS_PYTEST_ABOVE_54:
-        return cls.from_parent(*args, **kwargs)  # type: ignore
-    return cls(*args, **kwargs)
 
 
 class SchemathesisFunction(Function):
@@ -99,17 +103,36 @@ class SchemathesisCase(PyCollector):
         This implementation is based on the original one in pytest, but with slight adjustments
         to produce tests out of hypothesis ones.
         """
+        from .._hypothesis import create_test
+
+        is_trio_test = False
+        for mark in getattr(self.test_function, "pytestmark", []):
+            if mark.name == "trio":
+                is_trio_test = True
+                break
+
         if isinstance(result, Ok):
             operation = result.ok()
             if self.is_invalid_test:
                 funcobj = self.test_function
             else:
+                override = get_override_from_mark(self.test_function)
+                as_strategy_kwargs: dict | None
+                if override is not None:
+                    as_strategy_kwargs = {}
+                    for location, entry in override.for_operation(operation).items():
+                        if entry:
+                            as_strategy_kwargs[location] = entry
+                else:
+                    as_strategy_kwargs = None
                 funcobj = create_test(
                     operation=operation,
                     test=self.test_function,
                     _given_kwargs=self.given_kwargs,
                     data_generation_methods=self.schemathesis_case.data_generation_methods,
                     generation_config=self.schemathesis_case.generation_config,
+                    as_strategy_kwargs=as_strategy_kwargs,
+                    keep_async_fn=is_trio_test,
                 )
             name = self._get_test_name(operation)
         else:
@@ -123,7 +146,9 @@ class SchemathesisCase(PyCollector):
                 name += f"[{error.full_path}]"
 
         cls = self._get_class_parent()
-        definition: FunctionDefinition = create(FunctionDefinition, name=self.name, parent=self.parent, callobj=funcobj)
+        definition: FunctionDefinition = FunctionDefinition.from_parent(
+            name=self.name, parent=self.parent, callobj=funcobj
+        )
         fixturemanager = self.session._fixturemanager
         fixtureinfo = fixturemanager.getfixtureinfo(definition, funcobj, cls)
 
@@ -134,8 +159,7 @@ class SchemathesisCase(PyCollector):
             funcobj = partial(funcobj, self.parent.obj)
 
         if not metafunc._calls:
-            yield create(
-                SchemathesisFunction,
+            yield SchemathesisFunction.from_parent(
                 name=name,
                 parent=self.parent,
                 callobj=funcobj,
@@ -144,14 +168,14 @@ class SchemathesisCase(PyCollector):
                 originalname=self.name,
             )
         else:
-            fixtures.add_funcarg_pseudo_fixture_def(self.parent, metafunc, fixturemanager)  # type: ignore[arg-type]
+            if not IS_PYTEST_ABOVE_8:
+                fixtures.add_funcarg_pseudo_fixture_def(self.parent, metafunc, fixturemanager)  # type: ignore[arg-type]
             fixtureinfo.prune_dependency_tree()
             for callspec in metafunc._calls:
                 subname = f"{name}[{callspec.id}]"
-                yield create(
-                    SchemathesisFunction,
+                yield SchemathesisFunction.from_parent(
+                    self.parent,
                     name=subname,
-                    parent=self.parent,
                     callspec=callspec,
                     callobj=funcobj,
                     fixtureinfo=fixtureinfo,
@@ -203,7 +227,7 @@ def pytest_pycollect_makeitem(collector: nodes.Collector, name: str, obj: Any) -
     """Switch to a different collector if the test is parametrized marked by schemathesis."""
     outcome = yield
     if is_schemathesis_test(obj):
-        outcome.force_result(create(SchemathesisCase, parent=collector, test_function=obj, name=name))
+        outcome.force_result(SchemathesisCase.from_parent(collector, test_function=obj, name=name))
     else:
         outcome.get_result()
 
@@ -228,27 +252,58 @@ def skip_unnecessary_hypothesis_output() -> Generator:
         yield
 
 
-@hookimpl(hookwrapper=True)
+@hookimpl(wrapper=True)
 def pytest_pyfunc_call(pyfuncitem):  # type:ignore
     """It is possible to have a Hypothesis exception in runtime.
 
     For example - kwargs validation is failed for some strategy.
     """
+    from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
+
+    from .._hypothesis import (
+        get_invalid_example_headers_mark,
+        get_invalid_regex_mark,
+        get_non_serializable_mark,
+        has_unsatisfied_example_mark,
+    )
+
+    __tracebackhide__ = True
     if isinstance(pyfuncitem, SchemathesisFunction):
-        with skip_unnecessary_hypothesis_output():
-            outcome = yield
         try:
-            outcome.get_result()
+            with skip_unnecessary_hypothesis_output():
+                yield
         except InvalidArgument as exc:
+            if "Inconsistent args" in str(exc) and "@example()" in str(exc):
+                raise UsageError(GIVEN_AND_EXPLICIT_EXAMPLES_ERROR_MESSAGE) from None
             raise OperationSchemaError(exc.args[0]) from None
         except HypothesisRefResolutionError:
             pytest.skip(RECURSIVE_REFERENCE_ERROR_MESSAGE)
-        except SkipTest as exc:
+        except (SkipTest, unittest.SkipTest) as exc:
+            if has_unsatisfied_example_mark(pyfuncitem.obj):
+                raise Unsatisfiable("Failed to generate test cases from examples for this API operation") from None
+            non_serializable = get_non_serializable_mark(pyfuncitem.obj)
+            if non_serializable is not None:
+                media_types = ", ".join(non_serializable.media_types)
+                raise SerializationNotPossible(
+                    "Failed to generate test cases from examples for this API operation because of"
+                    f" unsupported payload media types: {media_types}\n{SERIALIZERS_SUGGESTION_MESSAGE}",
+                    media_types=non_serializable.media_types,
+                ) from None
+            invalid_regex = get_invalid_regex_mark(pyfuncitem.obj)
+            if invalid_regex is not None:
+                raise InvalidRegularExpression.from_schema_error(invalid_regex, from_examples=True) from None
+            invalid_headers = get_invalid_example_headers_mark(pyfuncitem.obj)
+            if invalid_headers is not None:
+                raise InvalidHeadersExample.from_headers(invalid_headers) from None
             pytest.skip(exc.args[0])
+        except SchemaError as exc:
+            raise InvalidRegularExpression.from_schema_error(exc, from_examples=False) from exc
         except Exception as exc:
             if hasattr(exc, "__notes__"):
                 exc.__notes__ = [note for note in exc.__notes__ if not _should_ignore_entry(note)]  # type: ignore
             raise
+        invalid_headers = get_invalid_example_headers_mark(pyfuncitem.obj)
+        if invalid_headers is not None:
+            raise InvalidHeadersExample.from_headers(invalid_headers) from None
     else:
-        outcome = yield
-        outcome.get_result()
+        yield

@@ -1,5 +1,7 @@
 """Expression nodes description and evaluation logic."""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum, unique
 from typing import Any
@@ -8,6 +10,7 @@ from requests.structures import CaseInsensitiveDict
 
 from .. import references
 from .context import ExpressionContext
+from .extractors import Extractor
 
 
 @dataclass
@@ -73,6 +76,7 @@ class NonBodyRequest(Node):
 
     location: str
     parameter: str
+    extractor: Extractor | None = None
 
     def evaluate(self, context: ExpressionContext) -> str:
         container: dict | CaseInsensitiveDict = {
@@ -82,7 +86,12 @@ class NonBodyRequest(Node):
         }[self.location] or {}
         if self.location == "header":
             container = CaseInsensitiveDict(container)
-        return container[self.parameter]
+        value = container.get(self.parameter)
+        if value is None:
+            return ""
+        if self.extractor is not None:
+            return self.extractor.extract(value) or ""
+        return value
 
 
 @dataclass
@@ -95,7 +104,10 @@ class BodyRequest(Node):
         document = context.case.body
         if self.pointer is None:
             return document
-        return references.resolve_pointer(document, self.pointer[1:])
+        resolved = references.resolve_pointer(document, self.pointer[1:])
+        if resolved is references.UNRESOLVABLE:
+            return None
+        return resolved
 
 
 @dataclass
@@ -103,9 +115,15 @@ class HeaderResponse(Node):
     """A node for `$response.header` expressions."""
 
     parameter: str
+    extractor: Extractor | None = None
 
     def evaluate(self, context: ExpressionContext) -> str:
-        return context.response.headers[self.parameter]
+        value = context.response.headers.get(self.parameter)
+        if value is None:
+            return ""
+        if self.extractor is not None:
+            return self.extractor.extract(value) or ""
+        return value
 
 
 @dataclass
@@ -124,4 +142,7 @@ class BodyResponse(Node):
         if self.pointer is None:
             # We need the parsed document - data will be serialized before sending to the application
             return document
-        return references.resolve_pointer(document, self.pointer[1:])
+        resolved = references.resolve_pointer(document, self.pointer[1:])
+        if resolved is references.UNRESOLVABLE:
+            return None
+        return resolved

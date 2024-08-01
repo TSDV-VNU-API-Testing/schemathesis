@@ -1,10 +1,13 @@
+import sys
 from contextlib import asynccontextmanager
 
 import pytest
-from fastapi import Cookie, FastAPI
-from hypothesis import HealthCheck, given, settings
+from fastapi import Cookie, FastAPI, Header
+from hypothesis import HealthCheck, Phase, given, settings
+from pydantic import BaseModel
 
 import schemathesis
+from schemathesis.generation import GenerationConfig
 from schemathesis.models import Case
 from schemathesis.specs.openapi.loaders import from_asgi
 
@@ -14,8 +17,9 @@ def schema(fastapi_app):
     return from_asgi("/openapi.json", fastapi_app, force_schema_version="30")
 
 
+@pytest.mark.parametrize("method", ("call", "call_asgi"))
 @pytest.mark.hypothesis_nested
-def test_cookies(fastapi_app):
+def test_cookies(fastapi_app, method):
     @fastapi_app.get("/cookies")
     def cookies(token: str = Cookie(None)):
         return {"token": token}
@@ -48,15 +52,77 @@ def test_cookies(fastapi_app):
     @given(case=strategy)
     @settings(max_examples=3, suppress_health_check=[HealthCheck.filter_too_much], deadline=None)
     def test(case):
-        response = case.call_asgi()
+        response = getattr(case, method)()
         assert response.status_code == 200
         assert response.json() == {"token": "test"}
 
     test()
 
 
+@pytest.mark.hypothesis_nested
+def test_null_byte(fastapi_app):
+    schemathesis.experimental.OPEN_API_3_1.enable()
+
+    class Payload(BaseModel):
+        name: str
+
+    @fastapi_app.post("/data")
+    def post_create(payload: Payload):
+        payload = payload.model_dump()
+        assert "\x00" not in payload["name"]
+        return {"success": True}
+
+    schema = schemathesis.from_asgi(
+        "/openapi.json", app=fastapi_app, generation_config=GenerationConfig(allow_x00=False)
+    )
+
+    strategy = schema["/data"]["POST"].as_strategy()
+
+    @given(case=strategy)
+    @settings(
+        max_examples=50, suppress_health_check=[HealthCheck.filter_too_much], deadline=None, phases=[Phase.generate]
+    )
+    def test(case):
+        response = case.call()
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+
+    test()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="typing.Annotated is not available in Python 3.8")
+@pytest.mark.hypothesis_nested
+def test_null_byte_in_headers(fastapi_app):
+    from typing import Annotated
+
+    schemathesis.experimental.OPEN_API_3_1.enable()
+
+    @fastapi_app.post("/data")
+    def operation(x_header: Annotated[str, Header()], x_cookie: Annotated[str, Cookie()]):
+        assert "\x00" not in x_header
+        assert "\x00" not in x_cookie
+        return {"success": True}
+
+    schema = schemathesis.from_asgi(
+        "/openapi.json", app=fastapi_app, generation_config=GenerationConfig(allow_x00=False)
+    )
+
+    strategy = schema["/data"]["POST"].as_strategy()
+
+    @given(case=strategy)
+    @settings(
+        max_examples=50, suppress_health_check=[HealthCheck.filter_too_much], deadline=None, phases=[Phase.generate]
+    )
+    def test(case):
+        response = case.call()
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+
+    test()
+
+
 def test_not_app_with_asgi(schema):
-    case = Case(schema["/users"]["GET"])
+    case = Case(schema["/users"]["GET"], generation_time=0.0)
     case.operation.app = None
     with pytest.raises(
         RuntimeError,
@@ -83,13 +149,13 @@ def test_base_url():
     def read_root():
         return {"Hello": "World"}
 
-    schema = schemathesis.from_dict(raw_schema)
+    schema = schemathesis.from_dict(raw_schema, app=app)
     strategy = schema["/foo"]["GET"].as_strategy()
 
     @given(case=strategy)
     @settings(max_examples=1, suppress_health_check=[HealthCheck.filter_too_much], deadline=None)
     def test(case):
-        response = case.call_asgi(app)
+        response = case.call()
         # Then the base path should be respected and calls should not lead to 404
         assert response.status_code == 200
 
@@ -177,9 +243,9 @@ def test_events(setup):
     schema = schemathesis.from_asgi("/openapi.json", app, force_schema_version="30")
 
     @given(case=schema["/health"]["GET"].as_strategy())
-    @settings(max_examples=3)
+    @settings(max_examples=3, deadline=None)
     def test(case):
-        response = case.call_asgi()
+        response = case.call()
         assert response.status_code == 200
         assert response.json() == {"status": "OK"}
 

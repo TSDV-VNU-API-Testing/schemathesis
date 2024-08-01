@@ -13,10 +13,11 @@ import schemathesis.cli.context
 from schemathesis import models, runner, utils
 from schemathesis.cli.output import default
 from schemathesis.cli.output.default import display_internal_error
+from schemathesis.constants import NOT_SET
 from schemathesis.generation import DataGenerationMethod
+from schemathesis.models import OperationDefinition
 from schemathesis.runner.events import Finished, InternalError
 from schemathesis.runner.serialization import SerializedTestResult
-from schemathesis.constants import NOT_SET
 
 from ...utils import strip_style_win32
 
@@ -35,7 +36,13 @@ def execution_context():
 
 @pytest.fixture
 def operation(swagger_20):
-    return models.APIOperation("/success", "GET", definition={}, base_url="http://127.0.0.1:8080", schema=swagger_20)
+    return models.APIOperation(
+        "/success",
+        "GET",
+        definition=OperationDefinition({}, {}, ""),
+        base_url="http://127.0.0.1:8080",
+        schema=swagger_20,
+    )
 
 
 @pytest.fixture
@@ -100,12 +107,14 @@ def test_display_section_name(capsys, title, separator, printed, expected):
 
 
 @pytest.mark.parametrize("verbosity", (0, 1))
-def test_handle_initialized(capsys, execution_context, results_set, swagger_20, verbosity):
+def test_handle_initialized(capsys, mocker, execution_context, results_set, swagger_20, verbosity):
     execution_context.verbosity = verbosity
     # Given Initialized event
     event = runner.events.Initialized.from_schema(schema=swagger_20, seed=42)
     # When this even is handled
     default.handle_initialized(execution_context, event)
+    default.handle_before_probing(execution_context, mocker.Mock(auto_spec=True))
+    default.handle_after_probing(execution_context, mocker.Mock(probes=None))
     out = capsys.readouterr().out
     lines = out.split("\n")
     # Then initial title is displayed
@@ -118,13 +127,17 @@ def test_handle_initialized(capsys, execution_context, results_set, swagger_20, 
     # And number of collected operations
     assert strip_style_win32(click.style("Collected API operations: 1", bold=True)) in lines
     # And the output has an empty line in the end
-    assert out.endswith("\n\n")
+    assert out.endswith("\n")
 
 
 def test_display_statistic(capsys, swagger_20, execution_context, operation, response):
     # Given multiple successful & failed checks in a single test
-    success = models.Check("not_a_server_error", models.Status.success, response, 0, models.Case(operation))
-    failure = models.Check("not_a_server_error", models.Status.failure, response, 0, models.Case(operation))
+    success = models.Check(
+        "not_a_server_error", models.Status.success, response, 0, models.Case(operation, generation_time=0.0)
+    )
+    failure = models.Check(
+        "not_a_server_error", models.Status.failure, response, 0, models.Case(operation, generation_time=0.0)
+    )
     single_test_statistic = models.TestResult(
         method=operation.method,
         path=operation.full_path,
@@ -136,7 +149,9 @@ def test_display_statistic(capsys, swagger_20, execution_context, operation, res
             success,
             failure,
             failure,
-            models.Check("different_check", models.Status.success, response, 0, models.Case(operation)),
+            models.Check(
+                "different_check", models.Status.success, response, 0, models.Case(operation, generation_time=0.0)
+            ),
         ],
     )
     results = models.TestResultSet(seed=42, results=[single_test_statistic])
@@ -230,8 +245,21 @@ def test_display_hypothesis_output(capsys):
 @pytest.mark.parametrize("body", ({}, {"foo": "bar"}, NOT_SET))
 def test_display_single_failure(capsys, swagger_20, execution_context, operation, body, response):
     # Given a single test result with multiple successful & failed checks
-    success = models.Check("not_a_server_error", models.Status.success, response, 0, models.Case(operation, body=body))
-    failure = models.Check("not_a_server_error", models.Status.failure, response, 0, models.Case(operation, body=body))
+    media_type = "application/json" if body is not NOT_SET else None
+    success = models.Check(
+        "not_a_server_error",
+        models.Status.success,
+        response,
+        0,
+        models.Case(operation, generation_time=0.0, body=body, media_type=media_type),
+    )
+    failure = models.Check(
+        "not_a_server_error",
+        models.Status.failure,
+        response,
+        0,
+        models.Case(operation, generation_time=0.0, body=body, media_type=media_type),
+    )
     test_statistic = models.TestResult(
         method=operation.method,
         path=operation.full_path,
@@ -243,7 +271,18 @@ def test_display_single_failure(capsys, swagger_20, execution_context, operation
             success,
             failure,
             failure,
-            models.Check("different_check", models.Status.success, response, 0, models.Case(operation, body=body)),
+            models.Check(
+                "different_check",
+                models.Status.success,
+                response,
+                0,
+                models.Case(
+                    operation,
+                    generation_time=0.0,
+                    body=body,
+                    media_type=media_type,
+                ),
+            ),
         ],
     )
     # When this failure is displayed

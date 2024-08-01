@@ -1,10 +1,11 @@
 import pytest
 
 import schemathesis
-from schemathesis.exceptions import OperationSchemaError, SchemaError
+from schemathesis.exceptions import OperationNotFound, OperationSchemaError, SchemaError
+from schemathesis.experimental import OPEN_API_3_1
+from schemathesis.internal.result import Err, Ok
 from schemathesis.specs.openapi.parameters import OpenAPI20Body
 from schemathesis.specs.openapi.schemas import InliningResolver
-from schemathesis.internal.result import Err, Ok
 
 
 @pytest.mark.parametrize("base_path", ("/v1", "/v1/"))
@@ -104,6 +105,13 @@ def test_resolving_multiple_files():
     }
 
 
+def test_resolving_relative_files():
+    schema = schemathesis.from_path("test/data/relative_files/main.yaml")
+    operations = list(schema.get_all_operations())
+    errors = [op.err() for op in operations if isinstance(op, Err)]
+    assert not errors
+
+
 def test_schema_parsing_error(simple_schema):
     # When API operation contains unresolvable reference on its parameter level
     simple_schema["paths"]["/users"]["get"]["parameters"] = [{"$ref": "#/definitions/SimpleIntRef"}]
@@ -133,6 +141,16 @@ def test_not_recoverable_schema_error(simple_schema, validate_schema, expected_e
     with pytest.raises(expected_exception):
         schema = schemathesis.from_dict(simple_schema, validate_schema=validate_schema)
         list(schema.get_all_operations())
+
+
+def test_no_paths_on_openapi_3_1():
+    raw_schema = {
+        "openapi": "3.1.0",
+        "info": {"title": "Test", "version": "0.1.0"},
+    }
+    OPEN_API_3_1.enable()
+    schema = schemathesis.from_dict(raw_schema)
+    assert list(schema.get_all_operations()) == []
 
 
 def test_schema_error_on_path(simple_schema):
@@ -168,17 +186,66 @@ SCHEMA = {
 
 
 @pytest.mark.parametrize(
-    "operation_id, path, method",
+    "operation_id, reference, path, method",
     (
-        ("getFoo", "/foo", "GET"),
-        ("postBar", "/bar", "POST"),
+        ("getFoo", "#/paths/~1foo/get", "/foo", "GET"),
+        ("postBar", "#/paths/~1bar/post", "/bar", "POST"),
     ),
 )
-def test_get_operation_by_id(operation_id, path, method):
+def test_get_operation(operation_id, reference, path, method):
     schema = schemathesis.from_dict(SCHEMA)
-    operation = schema.get_operation_by_id(operation_id)
-    assert operation.path == path
-    assert operation.method.upper() == method
+    for getter, key in ((schema.get_operation_by_id, operation_id), (schema.get_operation_by_reference, reference)):
+        operation = getter(key)
+        assert operation.path == path
+        assert operation.method.upper() == method
+
+
+def test_get_operation_by_id_in_referenced_path(empty_open_api_3_schema):
+    # When a path enty is behind a reference
+    # it should be resolved correctly
+    empty_open_api_3_schema["paths"]["/foo"] = {"$ref": "#/components/x-paths/Path"}
+    empty_open_api_3_schema["components"] = {
+        "x-paths": {
+            "Path": {"get": {"operationId": "getFoo", **RESPONSES}},
+        },
+    }
+    schema = schemathesis.from_dict(empty_open_api_3_schema)
+    operation = schema.get_operation_by_id("getFoo")
+    assert operation.path == "/foo"
+    assert operation.method.upper() == "GET"
+
+
+def test_get_operation_by_id_in_referenced_path_shared_parameters(empty_open_api_3_schema):
+    # When a path enty is behind a reference
+    # and it shares parameters with the parent path
+    # it should be resolved correctly
+    # and the parameters should be merged
+    parameter = {"name": "foo", "in": "query", "schema": {"type": "string"}}
+    empty_open_api_3_schema["paths"]["/foo"] = {"$ref": "#/components/x-paths/Path"}
+    empty_open_api_3_schema["components"] = {
+        "x-paths": {
+            "Path": {
+                "get": {"operationId": "getFoo", **RESPONSES},
+                "parameters": [parameter],
+            }
+        },
+    }
+    schema = schemathesis.from_dict(empty_open_api_3_schema)
+    operation = schema.get_operation_by_id("getFoo")
+    assert operation.path == "/foo"
+    assert operation.method.upper() == "GET"
+    assert operation.query.get("foo").definition == parameter
+
+
+def test_get_operation_by_id_no_paths_on_openapi_3_1():
+    raw_schema = {
+        "openapi": "3.1.0",
+        "info": {"title": "Test", "version": "0.1.0"},
+    }
+    OPEN_API_3_1.enable()
+    schema = schemathesis.from_dict(raw_schema)
+    with pytest.raises(OperationNotFound):
+        schema.get_operation_by_id("getFoo")
 
 
 @pytest.mark.parametrize(
@@ -205,4 +272,6 @@ def test_ssl_error(openapi3_schema_url, server):
     with pytest.raises(SchemaError) as exc:
         schemathesis.from_uri(f"https://127.0.0.1:{server['port']}")
     assert exc.value.message == "SSL verification problem"
-    assert exc.value.extras[0].startswith("[SSL: WRONG_VERSION_NUMBER] wrong version number")
+    assert exc.value.extras[0].startswith(
+        ("[SSL: WRONG_VERSION_NUMBER] wrong version number", "[SSL] record layer failure")
+    )

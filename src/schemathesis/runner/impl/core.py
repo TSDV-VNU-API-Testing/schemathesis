@@ -6,10 +6,20 @@ import threading
 import time
 import unittest
 import uuid
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Generator, Iterable, Literal, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Generator,
+    Iterable,
+    List,
+    Literal,
+    cast,
+)
 from warnings import WarningMessage, catch_warnings
 
 import hypothesis
@@ -17,23 +27,38 @@ import requests
 from _pytest.logging import LogCaptureHandler, catching_logs
 from hypothesis.errors import HypothesisException, InvalidArgument
 from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
+from jsonschema.exceptions import SchemaError as JsonSchemaError
 from jsonschema.exceptions import ValidationError
-from requests.auth import HTTPDigestAuth, _basic_auth_str
+from requests.auth import HTTPDigestAuth
+from urllib3.exceptions import InsecureRequestWarning
 
-from ... import failures, hooks
+from ... import experimental, failures, hooks
 from ..._compat import MultipleFailures
+from ..._hypothesis import (
+    get_invalid_example_headers_mark,
+    get_invalid_regex_mark,
+    get_non_serializable_mark,
+    has_unsatisfied_example_mark,
+)
+from ..._override import CaseOverride
 from ...auths import unregister as unregister_auth
+from ...checks import _make_max_response_time_failure_message
 from ...constants import (
     DEFAULT_STATEFUL_RECURSION_LIMIT,
     RECURSIVE_REFERENCE_ERROR_MESSAGE,
+    SERIALIZERS_SUGGESTION_MESSAGE,
     USER_AGENT,
 )
 from ...exceptions import (
     CheckFailed,
     DeadlineExceeded,
+    InternalError,
+    InvalidHeadersExample,
     InvalidRegularExpression,
     NonCheckError,
     OperationSchemaError,
+    RecursiveReferenceError,
+    SerializationNotPossible,
     SkipTest,
     format_exception,
     get_grouped_exception,
@@ -41,7 +66,6 @@ from ...exceptions import (
 )
 from ...generation import DataGenerationMethod, GenerationConfig
 from ...hooks import HookContext, get_all_by_name
-from ...internal.datetime import current_datetime
 from ...internal.result import Ok
 from ...models import (
     APIOperation,
@@ -54,12 +78,19 @@ from ...models import (
 )
 from ...runner import events
 from ...schemas import BaseSchema
+from ...service import extensions
+from ...service.models import AnalysisResult, AnalysisSuccess
+from ...specs.openapi import formats
 from ...specs.openapi._vas import logger
 from ...stateful import Feedback, Stateful
+from ...stateful import events as stateful_events
+from ...stateful import runner as stateful_runner
 from ...targets import Target, TargetContext
-from ...types import RawAuth, RequestCert
+from ...transports import RequestConfig, RequestsTransport
+from ...transports.auth import get_requests_auth, prepare_wsgi_headers
+from ...types import RawAuth
 from ...utils import capture_hypothesis_output
-from ..override import CaseOverride
+from .. import probes
 from ..serialization import SerializedTestResult
 
 if TYPE_CHECKING:
@@ -81,11 +112,12 @@ class BaseRunner:
     targets: Iterable[Target]
     hypothesis_settings: hypothesis.settings
     generation_config: GenerationConfig
+    probe_config: probes.ProbeConfig
+    request_config: RequestConfig = field(default_factory=RequestConfig)
     override: CaseOverride | None = None
     auth: RawAuth | None = None
     auth_type: str | None = None
     headers: dict[str, Any] | None = None
-    request_timeout: int | None = None
     store_interactions: bool = False
     seed: int | None = None
     exit_first: bool = False
@@ -96,7 +128,9 @@ class BaseRunner:
     stateful_recursion_limit: int = DEFAULT_STATEFUL_RECURSION_LIMIT
     count_operations: bool = True
     count_links: bool = True
+    service_client: ServiceClient | None = None
     _failures_counter: int = 0
+    _is_stopping_due_to_failure_limit: bool = False
 
     def execute(self) -> EventStream:
         """Common logic for all runners."""
@@ -110,39 +144,101 @@ class BaseRunner:
         if self.auth is not None:
             unregister_auth()
         results = TestResultSet(seed=self.seed)
+        start_time = time.monotonic()
+        initialized = None
+        __probes = None
+        __analysis: Result[AnalysisResult, Exception] | None = None
 
-        initialized = events.Initialized.from_schema(
-            schema=self.schema,
-            count_operations=self.count_operations,
-            count_links=self.count_links,
-            seed=self.seed,
-        )
+        def _initialize() -> events.Initialized:
+            nonlocal initialized
+            initialized = events.Initialized.from_schema(
+                schema=self.schema,
+                count_operations=self.count_operations,
+                count_links=self.count_links,
+                seed=self.seed,
+                start_time=start_time,
+            )
+            return initialized
 
         def _finish() -> events.Finished:
             if has_all_not_found(results):
                 results.add_warning(ALL_NOT_FOUND_WARNING_MESSAGE)
             return events.Finished.from_results(
-                results=results, running_time=time.monotonic() - initialized.start_time
+                results=results, running_time=time.monotonic() - start_time
             )
 
+        def _before_probes() -> events.BeforeProbing:
+            return events.BeforeProbing()
+
+        def _run_probes() -> None:
+            if not self.dry_run:
+                nonlocal __probes
+
+                __probes = run_probes(self.schema, self.probe_config)
+
+        def _after_probes() -> events.AfterProbing:
+            _probes = cast(List[probes.ProbeRun], __probes)
+            return events.AfterProbing(probes=_probes)
+
+        def _before_analysis() -> events.BeforeAnalysis:
+            return events.BeforeAnalysis()
+
+        def _run_analysis() -> None:
+            nonlocal __analysis, __probes
+
+            if self.service_client is not None:
+                try:
+                    _probes = cast(List[probes.ProbeRun], __probes)
+                    result = self.service_client.analyze_schema(
+                        _probes, self.schema.raw_schema
+                    )
+                    if isinstance(result, AnalysisSuccess):
+                        extensions.apply(result.extensions, self.schema)
+                    __analysis = Ok(result)
+                except Exception as exc:
+                    __analysis = Err(exc)
+
+        def _after_analysis() -> events.AfterAnalysis:
+            return events.AfterAnalysis(analysis=__analysis)
+
         if stop_event.is_set():
             yield _finish()
             return
 
-        yield initialized
-
-        if stop_event.is_set():
-            yield _finish()
-            return
+        for event_factory in (
+            _initialize,
+            _before_probes,
+            _run_probes,
+            _after_probes,
+            _before_analysis,
+            _run_analysis,
+            _after_analysis,
+        ):
+            event = event_factory()
+            if event is not None:
+                yield event
+            if stop_event.is_set():
+                yield _finish()
+                return
 
         try:
-            yield from self._execute(results, stop_event)
+            warnings.simplefilter("ignore", InsecureRequestWarning)
+            if not experimental.STATEFUL_ONLY.is_enabled:
+                yield from self._execute(results, stop_event)
+            if not self._is_stopping_due_to_failure_limit:
+                yield from self._run_stateful_tests(results)
         except KeyboardInterrupt:
             yield events.Interrupted()
 
         yield _finish()
 
     def _should_stop(self, event: events.ExecutionEvent) -> bool:
+        result = self.__should_stop(event)
+        if result:
+            self._is_stopping_due_to_failure_limit = True
+        return result
+
+    def __should_stop(self, event: events.ExecutionEvent) -> bool:
         if _should_count_towards_stop(event):
             if self.exit_first:
                 return True
@@ -155,6 +251,108 @@ class BaseRunner:
         self, results: TestResultSet, stop_event: threading.Event
     ) -> Generator[events.ExecutionEvent, None, None]:
         raise NotImplementedError
+
+    def _run_stateful_tests(
+        self, results: TestResultSet
+    ) -> Generator[events.ExecutionEvent, None, None]:
+        # Run new-style stateful tests
+        if (
+            self.stateful is not None
+            and experimental.STATEFUL_TEST_RUNNER.is_enabled
+            and self.schema.links_count > 0
+        ):
+            result = TestResult(
+                method="",
+                path="",
+                verbose_name="Stateful tests",
+                seed=self.seed,
+                data_generation_method=self.schema.data_generation_methods,
+            )
+            headers = self.headers or {}
+            if isinstance(self.schema.transport, RequestsTransport):
+                auth = get_requests_auth(self.auth, self.auth_type)
+            else:
+                auth = None
+                headers = prepare_wsgi_headers(headers, self.auth, self.auth_type)
+            config = stateful_runner.StatefulTestRunnerConfig(
+                checks=tuple(self.checks),
+                headers=headers,
+                hypothesis_settings=self.hypothesis_settings,
+                exit_first=self.exit_first,
+                max_failures=(
+                    None
+                    if self.max_failures is None
+                    else self.max_failures - self._failures_counter
+                ),
+                request=self.request_config,
+                auth=auth,
+                seed=self.seed,
+                override=self.override,
+            )
+            state_machine = self.schema.as_state_machine()
+            runner = state_machine.runner(config=config)
+            status = Status.success
+
+            def from_step_status(step_status: stateful_events.StepStatus) -> Status:
+                return {
+                    stateful_events.StepStatus.SUCCESS: Status.success,
+                    stateful_events.StepStatus.FAILURE: Status.failure,
+                    stateful_events.StepStatus.ERROR: Status.error,
+                    stateful_events.StepStatus.INTERRUPTED: Status.error,
+                }[step_status]
+
+            if self.store_interactions:
+                if isinstance(state_machine.schema.transport, RequestsTransport):
+
+                    def on_step_finished(event: stateful_events.StepFinished) -> None:
+                        if event.response is not None and event.status is not None:
+                            response = cast(requests.Response, event.response)
+                            result.store_requests_response(
+                                status=from_step_status(event.status),
+                                case=event.case,
+                                response=response,
+                                checks=event.checks,
+                            )
+
+                else:
+
+                    def on_step_finished(event: stateful_events.StepFinished) -> None:
+                        from ...transports.responses import WSGIResponse
+
+                        if event.response is not None and event.status is not None:
+                            response = cast(WSGIResponse, event.response)
+                            result.store_wsgi_response(
+                                status=from_step_status(event.status),
+                                case=event.case,
+                                response=response,
+                                headers=headers,
+                                elapsed=response.elapsed.total_seconds(),
+                                checks=event.checks,
+                            )
+
+            else:
+
+                def on_step_finished(event: stateful_events.StepFinished) -> None:
+                    return None
+
+            for stateful_event in runner.execute():
+                if isinstance(stateful_event, stateful_events.SuiteFinished):
+                    if stateful_event.failures and status != Status.error:
+                        status = Status.failure
+                    for failure in stateful_event.failures:
+                        result.checks.append(failure)
+                elif isinstance(stateful_event, stateful_events.StepFinished):
+                    on_step_finished(stateful_event)
+                elif isinstance(stateful_event, stateful_events.Errored):
+                    status = Status.error
+                    result.add_error(stateful_event.exception)
+                yield events.StatefulEvent(data=stateful_event)
+            results.append(result)
+            yield events.AfterStatefulExecution(
+                status=status,
+                result=SerializedTestResult.from_test_result(result),
+                data_generation_method=self.schema.data_generation_methods,
+            )
 
     def _run_tests(
         self,
@@ -197,7 +395,13 @@ class BaseRunner:
         ):
             if isinstance(result, Ok):
                 operation, test = result.ok()
-                feedback = Feedback(self.stateful, operation)
+                if (
+                    self.stateful is not None
+                    and not experimental.STATEFUL_TEST_RUNNER.is_enabled
+                ):
+                    feedback = Feedback(self.stateful, operation)
+                else:
+                    feedback = None
                 # Track whether `BeforeExecution` was already emitted.
                 # Schema error may happen before / after `BeforeExecution`, but it should be emitted only once
                 # and the `AfterExecution` event should have the same correlation id as previous `BeforeExecution`
@@ -219,17 +423,18 @@ class BaseRunner:
                         if isinstance(event, events.Interrupted):
                             return
                     # Additional tests, generated via the `feedback` instance
-                    yield from self._run_tests(
-                        feedback.get_stateful_tests,
-                        template,
-                        settings=settings,
-                        generation_config=generation_config,
-                        seed=seed,
-                        recursion_level=recursion_level + 1,
-                        results=results,
-                        headers=headers,
-                        **kwargs,
-                    )
+                    if feedback is not None:
+                        yield from self._run_tests(
+                            feedback.get_stateful_tests,
+                            template,
+                            settings=settings,
+                            generation_config=generation_config,
+                            seed=seed,
+                            recursion_level=recursion_level + 1,
+                            results=results,
+                            headers=headers,
+                            **kwargs,
+                        )
                 except OperationSchemaError as exc:
                     yield from handle_schema_error(
                         exc,
@@ -246,6 +451,19 @@ class BaseRunner:
                     self.schema.data_generation_methods,
                     recursion_level,
                 )
+
+
+def run_probes(schema: BaseSchema, config: probes.ProbeConfig) -> list[probes.ProbeRun]:
+    """Discover capabilities of the tested app."""
+    results = probes.run(schema, config)
+    for result in results:
+        if isinstance(result.probe, probes.NullByteInHeader) and result.is_failure:
+            from ...specs.openapi._hypothesis import HEADER_FORMAT, header_values
+
+            formats.register(
+                HEADER_FORMAT, header_values(blacklist_characters="\n\r\x00")
+            )
+    return results
 
 
 @dataclass
@@ -362,6 +580,31 @@ def run_test(
     errors: list[Exception] = []
     test_start_time = time.monotonic()
     setup_hypothesis_database_key(test, operation)
+
+    def _on_flaky(exc: Exception) -> Status:
+        if isinstance(exc.__cause__, hypothesis.errors.DeadlineExceeded):
+            status = Status.error
+            result.add_error(DeadlineExceeded.from_exc(exc.__cause__))
+        elif (
+            hasattr(hypothesis.errors, "FlakyFailure")
+            and isinstance(exc, hypothesis.errors.FlakyFailure)
+            and any(
+                isinstance(subexc, hypothesis.errors.DeadlineExceeded)
+                for subexc in exc.exceptions
+            )
+        ):
+            for sub_exc in exc.exceptions:
+                if isinstance(sub_exc, hypothesis.errors.DeadlineExceeded):
+                    result.add_error(DeadlineExceeded.from_exc(sub_exc))
+            status = Status.error
+        elif errors:
+            status = Status.error
+            add_errors(result, errors)
+        else:
+            status = Status.failure
+            result.mark_flaky()
+        return status
+
     try:
         with catch_warnings(
             record=True
@@ -393,17 +636,16 @@ def run_test(
         result.mark_errored()
         for error in deduplicate_errors(errors):
             result.add_error(error)
+    except hypothesis.errors.Flaky as exc:
+        status = _on_flaky(exc)
     except MultipleFailures:
         # Schemathesis may detect multiple errors that come from different check results
         # They raise different "grouped" exceptions
-        status = Status.failure
-    except hypothesis.errors.Flaky as exc:
-        if isinstance(exc.__cause__, hypothesis.errors.DeadlineExceeded):
+        if errors:
             status = Status.error
-            result.add_error(DeadlineExceeded.from_exc(exc.__cause__))
+            add_errors(result, errors)
         else:
             status = Status.failure
-            result.mark_flaky()
     except hypothesis.errors.Unsatisfiable:
         # We need more clear error message here
         status = Status.error
@@ -418,9 +660,25 @@ def run_test(
     except SkipTest as exc:
         status = Status.skip
         result.mark_skipped(exc)
-    except AssertionError:  # comes from `hypothesis-jsonschema`
-        error = reraise(operation)
+    except (
+        AssertionError
+    ) as exc:  # May come from `hypothesis-jsonschema` or `hypothesis`
         status = Status.error
+        try:
+            operation.schema.validate()
+            try:
+                raise InternalError(
+                    f"Unexpected error during testing of this API operation: {exc}"
+                ) from exc
+            except InternalError as exc:
+                error = exc
+        except ValidationError as exc:
+            error = OperationSchemaError.from_jsonschema_error(
+                exc,
+                path=operation.path,
+                method=operation.method,
+                full_path=operation.schema.get_full_path(operation.path),
+            )
         result.add_error(error)
     except HypothesisRefResolutionError:
         status = Status.error
@@ -440,9 +698,54 @@ def run_test(
     except hypothesis.errors.DeadlineExceeded as error:
         status = Status.error
         result.add_error(DeadlineExceeded.from_exc(error))
+    except JsonSchemaError as error:
+        status = Status.error
+        result.add_error(
+            InvalidRegularExpression.from_schema_error(error, from_examples=False)
+        )
     except Exception as error:
         status = Status.error
-        result.add_error(error)
+        # Likely a YAML parsing issue. E.g. `00:00:00.00` (without quotes) is parsed as float `0.0`
+        if str(error) == "first argument must be string or compiled pattern":
+            result.add_error(
+                InvalidRegularExpression(
+                    "Invalid `pattern` value: expected a string. "
+                    "If your schema is in YAML, ensure `pattern` values are quoted",
+                    is_valid_type=False,
+                )
+            )
+        else:
+            result.add_error(error)
+    if has_unsatisfied_example_mark(test):
+        status = Status.error
+        result.add_error(
+            hypothesis.errors.Unsatisfiable(
+                "Failed to generate test cases from examples for this API operation"
+            )
+        )
+    non_serializable = get_non_serializable_mark(test)
+    if non_serializable is not None and status != Status.error:
+        status = Status.error
+        media_types = ", ".join(non_serializable.media_types)
+        result.add_error(
+            SerializationNotPossible(
+                "Failed to generate test cases from examples for this API operation because of"
+                f" unsupported payload media types: {media_types}\n{SERIALIZERS_SUGGESTION_MESSAGE}",
+                media_types=non_serializable.media_types,
+            )
+        )
+    invalid_regex = get_invalid_regex_mark(test)
+    if invalid_regex is not None and status != Status.error:
+        status = Status.error
+        result.add_error(
+            InvalidRegularExpression.from_schema_error(
+                invalid_regex, from_examples=True
+            )
+        )
+    invalid_headers = get_invalid_example_headers_mark(test)
+    if invalid_headers:
+        status = Status.error
+        result.add_error(InvalidHeadersExample.from_headers(invalid_headers))
     test_elapsed_time = time.monotonic() - test_start_time
     # DEPRECATED: Seed is the same per test run
     # Fetch seed value, hypothesis generates it during test execution
@@ -516,7 +819,7 @@ def setup_hypothesis_database_key(test: Callable, operation: APIOperation) -> No
     # Hypothesis's function digest depends on the test function signature. To reflect it for the web API case,
     # we use all API operation parameters in the digest.
     extra = operation.verbose_name.encode("utf8")
-    for parameter in operation.definition.parameters:
+    for parameter in operation.iter_parameters():
         extra += parameter.serialize(operation).encode("utf8")
     test.hypothesis.inner_test._hypothesis_internal_add_digest = extra  # type: ignore
 
@@ -551,9 +854,7 @@ def deduplicate_errors(errors: list[Exception]) -> Generator[Exception, None, No
     """Deduplicate errors by their messages + tracebacks."""
     seen = set()
     for error in errors:
-        message = format_exception(error, True)
-        # Replace memory addresses with a fixed string
-        message = MEMORY_ADDRESS_RE.sub("0xbaaaaaaaaaad", message)
+        message = canonicalize_error_message(error)
         if message in seen:
             continue
         seen.add(message)
@@ -603,7 +904,9 @@ def run_checks(
 
     if max_response_time:
         if elapsed_time > max_response_time:
-            message = f"Actual: {elapsed_time:.2f}ms\nLimit: {max_response_time}.00ms"
+            message = _make_max_response_time_failure_message(
+                elapsed_time, max_response_time
+            )
             errors.append(AssertionError(message))
             result.add_failure(
                 "max_response_time",
@@ -698,13 +1001,10 @@ def network_test(
     targets: Iterable[Target],
     result: TestResult,
     session: requests.Session,
-    request_timeout: int | None,
-    request_tls_verify: bool,
-    request_proxy: str | None,
-    request_cert: RequestCert | None,
+    request_config: RequestConfig,
     store_interactions: bool,
     headers: dict[str, Any] | None,
-    feedback: Feedback,
+    feedback: Feedback | None,
     max_response_time: int | None,
     data_generation_methods: list[DataGenerationMethod],
     dry_run: bool,
@@ -717,20 +1017,16 @@ def network_test(
         headers = headers or {}
         if "user-agent" not in {header.lower() for header in headers}:
             headers["User-Agent"] = USER_AGENT
-        timeout = prepare_timeout(request_timeout)
         if not dry_run:
             args = (
                 checks,
                 targets,
                 result,
                 session,
-                timeout,
+                request_config,
                 store_interactions,
                 headers,
                 feedback,
-                request_tls_verify,
-                request_proxy,
-                request_cert,
                 max_response_time,
             )
             response = _network_test(case, *args)
@@ -743,13 +1039,10 @@ def _network_test(
     targets: Iterable[Target],
     result: TestResult,
     session: requests.Session,
-    timeout: float | None,
+    request_config: RequestConfig,
     store_interactions: bool,
     headers: dict[str, Any] | None,
-    feedback: Feedback,
-    request_tls_verify: bool,
-    request_proxy: str | None,
-    request_cert: RequestCert | None,
+    feedback: Feedback | None,
     max_response_time: int | None,
 ) -> requests.Response:
     check_results: list[Check] = []
@@ -758,12 +1051,12 @@ def _network_test(
         kwargs: dict[str, Any] = {
             "session": session,
             "headers": headers,
-            "timeout": timeout,
-            "verify": request_tls_verify,
-            "cert": request_cert,
+            "timeout": request_config.prepared_timeout,
+            "verify": request_config.tls_verify,
+            "cert": request_config.cert,
         }
-        if request_proxy is not None:
-            kwargs["proxies"] = {"all": request_proxy}
+        if request_config.proxy is not None:
+            kwargs["proxies"] = {"all": request_config.proxy}
         hooks.dispatch("process_call_kwargs", hook_context, case, kwargs)
         response = case.call(**kwargs)
     except CheckFailed as exc:
@@ -796,39 +1089,46 @@ def _network_test(
         requests_kwargs = case.as_requests_kwargs(
             base_url=case.get_full_base_url(), headers=headers
         )
-        if 'files' in requests_kwargs:
+        if "files" in requests_kwargs:
             # existing_tuple = requests_kwargs['files'][0]
-            #logger.debug("existing tuple in kwargs in core.py: %s", existing_tuple)
+            # logger.debug("existing tuple in kwargs in core.py: %s", existing_tuple)
 
             if case.metadata != {}:
-                for i, (key, value) in enumerate(requests_kwargs['files']):
+                for i, (key, value) in enumerate(requests_kwargs["files"]):
                     # Check if the key is in metadata
                     if key in case.metadata:
                         # Check if the current value is a tuple
                         if isinstance(value, tuple):
                             # Create a new tuple with the updated image name
-                            new_tuple = (value[0], case.metadata[key]["image_name"], *value[2:])
+                            new_tuple = (
+                                value[0],
+                                case.metadata[key]["image_name"],
+                                *value[2:],
+                            )
                             # Update the list with the new tuple
-                            requests_kwargs['files'][i] = (key, new_tuple)
+                            requests_kwargs["files"][i] = (key, new_tuple)
                         else:
                             # If not a tuple, directly update with the new image name
-                            requests_kwargs['files'][i] = (key, case.metadata[key]["image_name"])
-                        #logger.debug("Updated file in kwargs: %s", requests_kwargs['files'][i])
+                            requests_kwargs["files"][i] = (
+                                key,
+                                case.metadata[key]["image_name"],
+                            )
+                        # logger.debug("Updated file in kwargs: %s", requests_kwargs['files'][i])
         # requests_kwargs['files'][0][1] = case.metadata['image_name']
-            #logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
-        #logger.debug("request_kargs in core.py: %s", requests_kwargs)
+        # logger.debug("files in kwargs in core.py: %s", requests_kwargs['files'][0][1])
+        # logger.debug("request_kargs in core.py: %s", requests_kwargs)
         ### Create new request but reserve old content length
-        old_content_length = response.request.headers.get('Content-Length', '0')
-        #logger.debug("old request content length in core.py: %s", old_content_length)
+        old_content_length = response.request.headers.get("Content-Length", "0")
+        # logger.debug("old request content length in core.py: %s", old_content_length)
         request = requests.Request(**requests_kwargs).prepare()
-        #logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
-        request.headers['Content-Length'] = old_content_length # type: ignore
+        # logger.debug("request content length in core.py: %s", request.headers.get('Content-Length'))
+        request.headers["Content-Length"] = old_content_length  # type: ignore
 
         ### Create new request with new content length
         # request = requests.Request(**requests_kwargs).prepare()
-        #logger.debug("new request content length in core.py: %s", request.headers.get('Content-Length'))
+        # logger.debug("new request content length in core.py: %s", request.headers.get('Content-Length'))
         response.request = request
-        #logger.debug("case in core.py: %s", case.body)
+        # logger.debug("case in core.py: %s", case.body)
         run_checks(
             case=case,
             checks=checks,
@@ -842,12 +1142,8 @@ def _network_test(
         status = Status.failure
         raise
     finally:
-        if feedback.stateful == Stateful.links:
-            logger.debug("Stateful")
-        # do something
-
-        feedback.add_test_case(case, response)
-        # logger.debug("feedback in core.py: ", feedback)
+        if feedback is not None:
+            feedback.add_test_case(case, response)
         if store_interactions:
             # Lưu lại interaction
             result.store_requests_response(case, response, status, check_results)
@@ -864,14 +1160,6 @@ def get_session(
         yield session
 
 
-def prepare_timeout(timeout: int | None) -> float | None:
-    """Request timeout is in milliseconds, but `requests` uses seconds."""
-    output: int | float | None = timeout
-    if timeout is not None:
-        output = timeout / 1000
-    return output
-
-
 def wsgi_test(
     case: Case,
     checks: Iterable[CheckFunction],
@@ -881,7 +1169,7 @@ def wsgi_test(
     auth_type: str | None,
     headers: dict[str, Any] | None,
     store_interactions: bool,
-    feedback: Feedback,
+    feedback: Feedback | None,
     max_response_time: int | None,
     data_generation_methods: list[DataGenerationMethod],
     dry_run: bool,
@@ -890,7 +1178,7 @@ def wsgi_test(
     with ErrorCollector(errors):
         _force_data_generation_method(data_generation_methods, case)
         result.mark_executed()
-        headers = _prepare_wsgi_headers(headers, auth, auth_type)
+        headers = prepare_wsgi_headers(headers, auth, auth_type)
         if not dry_run:
             args = (
                 checks,
@@ -912,17 +1200,19 @@ def _wsgi_test(
     result: TestResult,
     headers: dict[str, Any],
     store_interactions: bool,
-    feedback: Feedback,
+    feedback: Feedback | None,
     max_response_time: int | None,
 ) -> WSGIResponse:
+    from ...transports.responses import WSGIResponse
+
     with catching_logs(LogCaptureHandler(), level=logging.DEBUG) as recorded:
-        start = time.monotonic()
         hook_context = HookContext(operation=case.operation)
-        kwargs = {"headers": headers}
+        kwargs: dict[str, Any] = {"headers": headers}
         hooks.dispatch("process_call_kwargs", hook_context, case, kwargs)
-        response = case.call_wsgi(**kwargs)
-        elapsed = time.monotonic() - start
-    context = TargetContext(case=case, response=response, response_time=elapsed)
+        response = cast(WSGIResponse, case.call(**kwargs))
+    context = TargetContext(
+        case=case, response=response, response_time=response.elapsed.total_seconds()
+    )
     run_targets(targets, context)
     result.logs.extend(recorded.records)
     status = Status.success
@@ -941,32 +1231,13 @@ def _wsgi_test(
         status = Status.failure
         raise
     finally:
-        feedback.add_test_case(case, response)
+        if feedback is not None:
+            feedback.add_test_case(case, response)
         if store_interactions:
             result.store_wsgi_response(
                 case, response, headers, elapsed, status, check_results
             )
     return response
-
-
-def _prepare_wsgi_headers(
-    headers: dict[str, Any] | None, auth: RawAuth | None, auth_type: str | None
-) -> dict[str, Any]:
-    headers = headers or {}
-    if "user-agent" not in {header.lower() for header in headers}:
-        headers["User-Agent"] = USER_AGENT
-    wsgi_auth = get_wsgi_auth(auth, auth_type)
-    if wsgi_auth:
-        headers["Authorization"] = wsgi_auth
-    return headers
-
-
-def get_wsgi_auth(auth: RawAuth | None, auth_type: str | None) -> str | None:
-    if auth:
-        if auth_type == "digest":
-            raise ValueError("Digest auth is not supported for WSGI apps")
-        return _basic_auth_str(*auth)
-    return None
 
 
 def asgi_test(
@@ -976,7 +1247,7 @@ def asgi_test(
     result: TestResult,
     store_interactions: bool,
     headers: dict[str, Any] | None,
-    feedback: Feedback,
+    feedback: Feedback | None,
     max_response_time: int | None,
     data_generation_methods: list[DataGenerationMethod],
     dry_run: bool,
@@ -1009,7 +1280,7 @@ def _asgi_test(
     result: TestResult,
     store_interactions: bool,
     headers: dict[str, Any] | None,
-    feedback: Feedback,
+    feedback: Feedback | None,
     max_response_time: int | None,
 ) -> requests.Response:
     hook_context = HookContext(operation=case.operation)
@@ -1036,7 +1307,8 @@ def _asgi_test(
         status = Status.failure
         raise
     finally:
-        feedback.add_test_case(case, response)
+        if feedback is not None:
+            feedback.add_test_case(case, response)
         if store_interactions:
             result.store_requests_response(case, response, status, check_results)
     return response

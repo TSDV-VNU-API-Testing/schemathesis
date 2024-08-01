@@ -9,6 +9,8 @@ Random seed: 42
 Workers: 2
 Collected API operations: 2
 Collected API links: 0
+API probing: ERROR
+Schema analysis: SKIP
 
 EE
 
@@ -20,6 +22,12 @@ Connection failed
 
     Failed to establish a new connection: [Error NUM] Connection refused
 _______________________________ GET /api/success _______________________________
+Network Error
+
+Connection failed
+
+    Failed to establish a new connection: [Error NUM] Connection refused
+_______________________________ API Probe errors _______________________________
 Network Error
 
 Connection failed
