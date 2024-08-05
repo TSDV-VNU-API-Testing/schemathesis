@@ -49,7 +49,6 @@ from .exceptions import (
     deduplicate_failed_checks,
     get_grouped_exception,
     get_timeout_error,
-    prepare_response_payload,
 )
 from .generation import DataGenerationMethod, GenerationConfig, generate_random_case_id
 from .hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, dispatch
@@ -159,6 +158,8 @@ class GenerationMetadata:
 class Case:
     """A single test case parameters."""
 
+    _id_generator = count(1)
+
     operation: APIOperation
     # Time spent on generation of this test case
     generation_time: float
@@ -187,6 +188,10 @@ class Case:
     # The way the case was generated (None for manually crafted ones)
     data_generation_method: DataGenerationMethod | None = None
     _auth: requests.auth.AuthBase | None = None
+
+    def __post_init__(self):
+        if not self.case_id:
+            self.case_id = next(Case._id_generator)
 
     def __repr__(self) -> str:
         parts = [f"{self.__class__.__name__}("]
@@ -1096,7 +1101,10 @@ class Interaction:
     response: Response
     checks: list[Check]
     status: Status
+    # case: Case
     data_generation_method: DataGenerationMethod
+    metadata: dict[str, Any] = field(default_factory=lambda: {})
+    prev_stateful_case: Optional["Case"] = None
 
     recorded_at: str = field(
         default_factory=lambda: datetime.datetime.now(TIMEZONE).isoformat()
@@ -1127,6 +1135,9 @@ class Interaction:
             data_generation_method=cast(
                 DataGenerationMethod, case.data_generation_method
             ),
+            # case=case
+            prev_stateful_case=case.prev_stateful_case,
+            metadata=case.metadata,
         )
 
     @classmethod
@@ -1151,6 +1162,9 @@ class Interaction:
             data_generation_method=cast(
                 DataGenerationMethod, case.data_generation_method
             ),
+            # case=case
+            prev_stateful_case=case.prev_stateful_case,
+            metadata=case.metadata,
         )
 
 

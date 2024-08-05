@@ -46,6 +46,7 @@ from ..constants import (
 )
 from ..exceptions import SchemaError, SchemaErrorType, extract_nth_traceback
 from ..fixups import ALL_FIXUPS
+from ..filters import FilterSet, expression_to_filter_function, is_deprecated
 from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod
 from ..hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, HookScope
 from ..internal.datetime import current_datetime

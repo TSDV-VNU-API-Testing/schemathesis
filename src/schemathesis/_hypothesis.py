@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import warnings
-<<<<<<< HEAD
-from typing import Any, Callable, Optional
-=======
 from typing import Any, Callable, Generator, Mapping, Optional, Tuple
->>>>>>> master
 
 import hypothesis
 from hypothesis import Phase
@@ -20,11 +16,7 @@ from jsonschema.exceptions import SchemaError
 
 from .auths import get_auth_storage_from_test
 from .constants import DEFAULT_DEADLINE
-<<<<<<< HEAD
-from .exceptions import OperationSchemaError
-=======
 from .exceptions import OperationSchemaError, SerializationNotPossible
->>>>>>> master
 from .generation import DataGenerationMethod, GenerationConfig
 from .hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher
 from .models import APIOperation, Case
@@ -109,11 +101,7 @@ def create_test(
         wrapped_test._hypothesis_internal_use_settings = existing_settings  # type: ignore
         if Phase.explicit in existing_settings.phases:
             wrapped_test = add_examples(
-<<<<<<< HEAD
-                wrapped_test, operation, hook_dispatcher=hook_dispatcher
-=======
                 wrapped_test, operation, hook_dispatcher=hook_dispatcher, as_strategy_kwargs=as_strategy_kwargs
->>>>>>> master
             )
     return wrapped_test
 
@@ -163,10 +151,7 @@ def add_examples(
     test: Callable,
     operation: APIOperation,
     hook_dispatcher: HookDispatcher | None = None,
-<<<<<<< HEAD
-=======
     as_strategy_kwargs: dict[str, Any] | None = None,
->>>>>>> master
 ) -> Callable:
     """Add examples to the Hypothesis test, if they are specified in the schema."""
     from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
@@ -174,11 +159,6 @@ def add_examples(
     try:
         examples: list[Case] = [
             get_single_example(strategy)
-<<<<<<< HEAD
-            for strategy in operation.get_strategies_from_examples()
-        ]
-    except (OperationSchemaError, HypothesisRefResolutionError, Unsatisfiable):
-=======
             for strategy in operation.get_strategies_from_examples(as_strategy_kwargs=as_strategy_kwargs)
         ]
     except (
@@ -188,7 +168,6 @@ def add_examples(
         SerializationNotPossible,
         SchemaError,
     ) as exc:
->>>>>>> master
         # Invalid schema:
         # In this case, the user didn't pass `--validate-schema=false` and see an error in the output anyway,
         # and no tests will be executed. For this reason, examples can be skipped

@@ -9,7 +9,7 @@ import logging
 import re
 import textwrap
 from dataclasses import asdict, dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from ..code_samples import get_excluded_headers
 from ..exceptions import (
@@ -417,7 +417,8 @@ class SerializedInteraction:
     status: Status
     data_generation_method: DataGenerationMethod
     recorded_at: str
-    case: Case
+    prev_stateful_case: Optional["Case"] = None
+    metadata: dict[str, Any] = field(default_factory=lambda: {})
 
     @classmethod
     def from_interaction(cls, interaction: Interaction) -> SerializedInteraction:
@@ -429,7 +430,9 @@ class SerializedInteraction:
             status=interaction.status,
             data_generation_method=interaction.data_generation_method,
             recorded_at=interaction.recorded_at,
-            case=interaction.case,
+            prev_stateful_case=interaction.prev_stateful_case,
+            metadata=interaction.metadata,
+            # case=interaction.case,
         )
 
 

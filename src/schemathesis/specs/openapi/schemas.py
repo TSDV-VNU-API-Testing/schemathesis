@@ -95,6 +95,7 @@ from .parameters import (
 )
 from .references import (
     RECURSION_DEPTH_LIMIT,
+    UNRESOLVABLE,
     ConvertingResolver,
     InliningResolver,
     resolve_pointer,
@@ -486,40 +487,83 @@ class BaseOpenAPISchema(BaseSchema):
 
     def get_operation_by_id(self, operation_id: str) -> APIOperation:
         """Get an `APIOperation` instance by its `operationId`."""
-        if not hasattr(self, "_operations_by_id"):
-            self._operations_by_id = dict(self._group_operations_by_id())
-        return self._operations_by_id[operation_id]
-
-    def _group_operations_by_id(
-        self,
-    ) -> Generator[tuple[str, APIOperation], None, None]:
-        for path, methods in self.raw_schema["paths"].items():
-            scope, raw_methods = self._resolve_methods(methods)
-            common_parameters = self.resolver.resolve_all(
-                methods.get("parameters", []), RECURSION_DEPTH_LIMIT - 8
-            )
-            for method, definition in methods.items():
-                if method not in HTTP_METHODS or "operationId" not in definition:
+        cache = self._operation_cache
+        cached = cache.get_operation_by_id(operation_id)
+        if cached is not None:
+            return cached
+        # Operation has not been accessed yet, need to populate the cache
+        if not cache.has_ids_to_definitions:
+            self._populate_operation_id_cache(cache)
+        try:
+            entry = cache.get_definition_by_id(operation_id)
+        except KeyError as exc:
+            matches = get_close_matches(operation_id, cache.known_operation_ids)
+            self._on_missing_operation(operation_id, exc, matches)
+        # It could've been already accessed in a different place
+        traversal_key = (entry.scope, entry.path, entry.method)
+        instance = cache.get_operation_by_traversal_key(traversal_key)
+        if instance is not None:
+            return instance
+        resolved = self._resolve_operation(entry.operation)
+        parameters = self._collect_operation_parameters(entry.path_item, resolved)
+        initialized = self.make_operation(entry.path, entry.method, parameters, entry.operation, resolved, entry.scope)
+        cache.insert_operation(initialized, traversal_key=traversal_key, operation_id=operation_id)
+        return initialized
+    
+    def _populate_operation_id_cache(self, cache: OperationCache) -> None:
+        """Collect all operation IDs from the schema."""
+        resolve = self.resolver.resolve
+        default_scope = self.resolver.resolution_scope
+        for path, path_item in self.raw_schema.get("paths", {}).items():
+            # If the path is behind a reference we have to keep the scope
+            # The scope is used to resolve nested components later on
+            if "$ref" in path_item:
+                scope, path_item = resolve(path_item["$ref"])
+            else:
+                scope = default_scope
+            for key, entry in path_item.items():
+                if key not in HTTP_METHODS:
                     continue
-                self.resolver.push_scope(scope)
-                try:
-                    resolved_definition = self.resolver.resolve_all(
-                        definition, RECURSION_DEPTH_LIMIT - 8
+                if "operationId" in entry:
+                    cache.insert_definition_by_id(
+                        entry["operationId"],
+                        path=path,
+                        method=key,
+                        scope=scope,
+                        path_item=path_item,
+                        operation=entry,
                     )
-                finally:
-                    self.resolver.pop_scope()
-                parameters = self.collect_parameters(
-                    itertools.chain(
-                        resolved_definition.get("parameters", ()), common_parameters
-                    ),
-                    resolved_definition,
-                )
-                raw_definition = OperationDefinition(
-                    raw_methods[method], resolved_definition, scope, parameters
-                )
-                yield resolved_definition["operationId"], self.make_operation(
-                    path, method, parameters, raw_definition
-                )
+
+    # def _group_operations_by_id(
+    #     self,
+    # ) -> Generator[tuple[str, APIOperation], None, None]:
+    #     for path, methods in self.raw_schema["paths"].items():
+    #         scope, raw_methods = self._resolve_methods(methods)
+    #         common_parameters = self.resolver.resolve_all(
+    #             methods.get("parameters", []), RECURSION_DEPTH_LIMIT - 8
+    #         )
+    #         for method, definition in methods.items():
+    #             if method not in HTTP_METHODS or "operationId" not in definition:
+    #                 continue
+    #             self.resolver.push_scope(scope)
+    #             try:
+    #                 resolved_definition = self.resolver.resolve_all(
+    #                     definition, RECURSION_DEPTH_LIMIT - 8
+    #                 )
+    #             finally:
+    #                 self.resolver.pop_scope()
+    #             parameters = self.collect_parameters(
+    #                 itertools.chain(
+    #                     resolved_definition.get("parameters", ()), common_parameters
+    #                 ),
+    #                 resolved_definition,
+    #             )
+    #             raw_definition = OperationDefinition(
+    #                 raw_methods[method], resolved_definition, scope, parameters
+    #             )
+    #             yield resolved_definition["operationId"], self.make_operation(
+    #                 path, method, parameters, raw_definition
+    #             )
 
     def get_operation_by_reference(self, reference: str) -> APIOperation:
         """Get local or external `APIOperation` instance by reference.
@@ -720,6 +764,12 @@ class BaseOpenAPISchema(BaseSchema):
         for status_code, link in links.get_all_links(operation):
             result[status_code][link.name] = link
         return result
+    
+    @property
+    def validator_cls(self) -> Type[jsonschema.Validator]:
+        if self.spec_version.startswith("3.1") and experimental.OPEN_API_3_1.is_enabled:
+            return jsonschema.Draft202012Validator
+        return jsonschema.Draft4Validator
 
     def validate_response(
         self, operation: APIOperation, response: GenericResponse
@@ -1265,20 +1315,20 @@ class OpenApi30(SwaggerV20):
             required = definition["requestBody"].get("required", False)
             description = definition["requestBody"].get("description")
             for media_type, content in definition["requestBody"]["content"].items():
-                if "properties" in content["schema"]:
-                    for field, details in content["schema"]["properties"].items():
-                        if (
-                            "format" in details
-                            and details["format"] == "binary"
-                            and (
-                                "picture" in field.lower()
-                                or "image" in field.lower()
-                                or "avatar" in field.lower()
-                            )
-                        ):
-                            # Thêm một trường mới với một số ngẫu nhiên từ 0 đến 100
-                            # Chú ý thêm lệnh : import random
-                            details["random_number"] = random.randint(0, 10)
+                # if "properties" in content["schema"]:
+                #     for field, details in content["schema"]["properties"].items():
+                #         if (
+                #             "format" in details
+                #             and details["format"] == "binary"
+                #             and (
+                #                 "picture" in field.lower()
+                #                 or "image" in field.lower()
+                #                 or "avatar" in field.lower()
+                #             )
+                #         ):
+                #             # Thêm một trường mới với một số ngẫu nhiên từ 0 đến 100
+                #             # Chú ý thêm lệnh : import random
+                #             details["random_number"] = random.randint(0, 10)
                 collected.append(
                     OpenAPI30Body(
                         content,

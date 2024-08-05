@@ -147,7 +147,7 @@ def get_command_representation() -> str:
     return f"st {args}"
 
 
-def worker(
+def vcr_writer(
     file_handle: click.utils.LazyFile, preserve_exact_body_bytes: bool, queue: Queue
 ) -> None:
     """Write YAML to a file in an incremental manner.
@@ -239,8 +239,7 @@ http_interactions:"""
                 # Body payloads are handled via separate `stream.write` calls to avoid some allocations
                 stream.write(
                     f"""\n- id: '{current_id}'
-  interaction_id: '{interaction.case.case_id}'
-  prev_id: '{interaction.case.prev_stateful_case.case_id if interaction.case.prev_stateful_case is not None else "None" }'
+  prev_id: '{interaction.prev_stateful_case.case_id if interaction.prev_stateful_case is not None else 'null'}'
   status: '{status}'
   seed: '{item.seed}'
   thread_id: {item.thread_id}
@@ -259,7 +258,7 @@ http_interactions:"""
                 format_request_body(stream, interaction.request)
                 stream.write(
                     f"""
-    metadata: '{json.dumps(interaction.case.metadata)}'
+    metadata: '{json.dumps(interaction.metadata)}'
   response:
     status:
       code: '{interaction.response.status_code}'

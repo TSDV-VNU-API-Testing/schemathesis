@@ -66,6 +66,7 @@ from ...exceptions import (
 )
 from ...generation import DataGenerationMethod, GenerationConfig
 from ...hooks import HookContext, get_all_by_name
+from ...internal.datetime import current_datetime
 from ...internal.result import Ok
 from ...models import (
     APIOperation,
@@ -848,7 +849,26 @@ def reraise(operation: APIOperation) -> OperationSchemaError:
 
 
 MEMORY_ADDRESS_RE = re.compile("0x[0-9a-fA-F]+")
+URL_IN_ERROR_MESSAGE_RE = re.compile(r"Max retries exceeded with url: .*? \(Caused by")
 
+def add_errors(result: TestResult, errors: list[Exception]) -> None:
+    group_errors(errors)
+    for error in deduplicate_errors(errors):
+        result.add_error(error)
+
+def group_errors(errors: list[Exception]) -> None:
+    """Group errors of the same kind info a single one, avoiding duplicate error messages."""
+    serialization_errors = [error for error in errors if isinstance(error, SerializationNotPossible)]
+    if len(serialization_errors) > 1:
+        errors[:] = [error for error in errors if not isinstance(error, SerializationNotPossible)]
+        media_types = sum((entry.media_types for entry in serialization_errors), [])
+        errors.append(SerializationNotPossible.from_media_types(*media_types))
+
+def canonicalize_error_message(error: Exception, include_traceback: bool = True) -> str:
+    message = format_exception(error, include_traceback)
+    # Replace memory addresses with a fixed string
+    message = MEMORY_ADDRESS_RE.sub("0xbaaaaaaaaaad", message)
+    return URL_IN_ERROR_MESSAGE_RE.sub("", message)
 
 def deduplicate_errors(errors: list[Exception]) -> Generator[Exception, None, None]:
     """Deduplicate errors by their messages + tracebacks."""

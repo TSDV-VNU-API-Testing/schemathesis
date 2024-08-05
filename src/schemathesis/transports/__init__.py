@@ -15,6 +15,7 @@ from ..constants import DEFAULT_RESPONSE_TIMEOUT, NOT_SET
 from ..exceptions import get_timeout_error
 from ..serializers import SerializerContext
 from ..types import Cookies, NotSet, RequestCert
+from ..specs.openapi._vas import VAS_KEY_PREFIX, logger
 
 if TYPE_CHECKING:
     import requests
@@ -109,8 +110,62 @@ class RequestsTransport:
             # `requests` will handle multipart form headers with the proper `boundary` value.
             if "content-type" not in final_headers:
                 final_headers["Content-Type"] = media_type
+        logger.debug("deps/schemathesis/src/schemathesis/transports/__init__.py: RequestsTransport.serialize_case -> old body: %s", case.body)
         url = case._get_url(base_url)
         serializer = case._get_serializer(media_type)
+
+        if isinstance(case.body, dict):
+            # Create a new body without meta-data
+            # new_body = {}
+            # for k, v in self.body.items():
+            #     if isinstance(v, list):
+            #         new_body[k] = []  # Initialize as an empty list
+
+            #         for item in v:
+            #             body_without_prefixed_field = {}
+            #             item_metadata = {}
+
+            #             for key, value in item.items():
+            #                 if key.startswith(VAS_KEY_PREFIX):
+            #                     # Extract metadata and remove the prefix
+            #                     new_key = key[len(VAS_KEY_PREFIX) + 1:]  # Remove prefix and underscore
+            #                     item_metadata[new_key] = value
+            #                 else:
+            #                     body_without_prefixed_field[key] = value
+
+            #             # Add the cleaned item to the new body
+            #             new_body[k].append(body_without_prefixed_field)
+
+            #             # Add the item metadata to the overall metadata dictionary
+            #             self.metadata.update(item_metadata)
+            body_without_prefixed_field = {
+                key: value
+                for key, value in case.body.items()
+                if not key.startswith(VAS_KEY_PREFIX)
+            }
+            if case.metadata == {}:
+                case.metadata = {
+                    f"{key[len(VAS_KEY_PREFIX) + 1:]}": value
+                    for key, value in case.body.items()
+                    if key.startswith(VAS_KEY_PREFIX)
+                }
+            new_body = {
+                **body_without_prefixed_field,
+                **{
+                    k: obj["image_name"]
+                    for k, obj in case.metadata.items()
+                }
+            }
+            self.body = new_body
+
+            logger.debug(
+                "deps/schemathesis/src/schemathesis/models.py: new body: %s", case.body
+            )
+            logger.debug(
+                "deps/schemathesis/src/schemathesis/models.py: new metadata: %s",
+                case.metadata,
+            )
+
         if serializer is not None and not isinstance(case.body, NotSet):
             context = SerializerContext(case=case)
             extra = serializer.as_requests(context, case._get_body())
@@ -118,7 +173,40 @@ class RequestsTransport:
             extra = {}
         if case._auth is not None:
             extra["auth"] = case._auth
-        additional_headers = extra.pop("headers", None)
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py -> old extra: %s", extra
+        )
+
+        # Convert key "files" in extra, it's binary field to right tuple format
+        new_extra: dict[str, Any] = {}
+        files = []
+        for key, value in extra.items():
+            if key != "files":
+                new_extra[key] = value
+                continue
+
+            files = extra["files"]
+            # logger.debug("deps/schemathesis/src/schemathesis/models.py -> files: %s", files)
+            formatted_files = []
+            for element in files:
+                _key, _value = element[0], element[1]
+                if not isinstance(_value, tuple) and _value[0] != None:
+                    if _key in case.metadata:
+                        _value = (
+                            case.metadata[_key]["image_name"],
+                            _value,
+                            case.metadata[_key]["image_type"],
+                        )
+                formatted_files.append((_key, _value))
+            new_extra[key] = formatted_files
+
+        logger.debug(
+            "deps/schemathesis/src/schemathesis/models.py -> new extra: %s", new_extra
+        )
+
+        additional_headers = new_extra.pop("headers", None)
+        # additional_headers = extra.pop("headers", None)
         if additional_headers:
             # Additional headers, needed for the serializer
             for key, value in additional_headers.items():
@@ -129,8 +217,10 @@ class RequestsTransport:
             "cookies": case.cookies,
             "headers": final_headers,
             "params": case.query,
-            **extra,
+            **new_extra,
+            # **extra,
         }
+    
         if params is not None:
             _merge_dict_to(data, "params", params)
         if cookies is not None:
