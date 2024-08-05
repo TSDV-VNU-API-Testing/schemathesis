@@ -37,7 +37,6 @@ class ParsedData:
     """
 
     original_case: Case
-    prev_case_id: int | None
     parameters: dict[str, Any]
     body: Any = NOT_SET
     prev_case_id: Optional[int] = None
