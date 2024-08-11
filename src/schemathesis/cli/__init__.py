@@ -45,6 +45,7 @@ from ..constants import (
     WAIT_FOR_SCHEMA_ENV_VAR,
 )
 from ..exceptions import SchemaError, SchemaErrorType, extract_nth_traceback
+from ..filters import FilterSet, expression_to_filter_function, is_deprecated
 from ..fixups import ALL_FIXUPS
 from ..generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod
 from ..hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher, HookScope

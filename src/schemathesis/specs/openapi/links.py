@@ -201,8 +201,8 @@ def get_links(
     elif response.status_code in responses:
         definition = responses[response.status_code]
     else:
-        response_definition = responses.get("default", {})
-    links = response_definition.get(field, {})
+        definition = responses.get("default", {})
+    links = definition.get(field, {})
     logger.debug(f"Links found: {links}")
     return [
         Link.from_definition(name, definition, operation)
@@ -265,7 +265,7 @@ class OpenAPILink(Direction):
             if container is None:
                 message = f"No such parameter in `{case.operation.method.upper()} {case.operation.path}`: `{name}`."
                 possibilities = [
-                    param.name for param in case.operation.definition.parameters
+                    param.name for param in case.operation.iter_parameters()
                 ]
                 matches = get_close_matches(name, possibilities)
                 if matches:

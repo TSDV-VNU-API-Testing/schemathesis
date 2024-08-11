@@ -270,14 +270,14 @@ def get_case_strategy(
     )
 
     logger.debug("\nCase Id: " + str(instance.case_id))
-        logger.debug(
-            "Prev case id: "
-            + (
-                str(prev_stateful_case.case_id)
-                if prev_stateful_case is not None
-                else "None"
-            )
+    logger.debug(
+        "Prev case id: "
+        + (
+            str(prev_stateful_case.case_id)
+            if prev_stateful_case is not None
+            else "None"
         )
+    )
 
     auth_context = auths.AuthContext(
         operation=operation,

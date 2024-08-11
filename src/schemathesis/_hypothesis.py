@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import warnings
-<<<<<<< HEAD
-from typing import Any, Callable, Optional
-=======
 from typing import Any, Callable, Generator, Mapping, Optional, Tuple
->>>>>>> master
 
 import hypothesis
 from hypothesis import Phase
@@ -20,11 +16,7 @@ from jsonschema.exceptions import SchemaError
 
 from .auths import get_auth_storage_from_test
 from .constants import DEFAULT_DEADLINE
-<<<<<<< HEAD
-from .exceptions import OperationSchemaError
-=======
 from .exceptions import OperationSchemaError, SerializationNotPossible
->>>>>>> master
 from .generation import DataGenerationMethod, GenerationConfig
 from .hooks import GLOBAL_HOOK_DISPATCHER, HookContext, HookDispatcher
 from .models import APIOperation, Case
@@ -56,7 +48,10 @@ def create_test(
     hook_dispatcher = getattr(test, "_schemathesis_hooks", None)
     auth_storage = get_auth_storage_from_test(test)
     strategies = []
-    skip_on_not_negated = len(data_generation_methods) == 1 and DataGenerationMethod.negative in data_generation_methods
+    skip_on_not_negated = (
+        len(data_generation_methods) == 1
+        and DataGenerationMethod.negative in data_generation_methods
+    )
     for data_generation_method in data_generation_methods:
         strategies.append(
             operation.as_strategy(
@@ -99,7 +94,11 @@ def create_test(
             default = hypothesis.settings.default
             wrapped_test._hypothesis_internal_use_settings = hypothesis.settings(
                 wrapped_test._hypothesis_internal_use_settings,
-                **{item: value for item, value in settings.__dict__.items() if value != getattr(default, item)},
+                **{
+                    item: value
+                    for item, value in settings.__dict__.items()
+                    if value != getattr(default, item)
+                },
             )
         else:
             wrapped_test = settings(wrapped_test)
@@ -109,11 +108,10 @@ def create_test(
         wrapped_test._hypothesis_internal_use_settings = existing_settings  # type: ignore
         if Phase.explicit in existing_settings.phases:
             wrapped_test = add_examples(
-<<<<<<< HEAD
-                wrapped_test, operation, hook_dispatcher=hook_dispatcher
-=======
-                wrapped_test, operation, hook_dispatcher=hook_dispatcher, as_strategy_kwargs=as_strategy_kwargs
->>>>>>> master
+                wrapped_test,
+                operation,
+                hook_dispatcher=hook_dispatcher,
+                as_strategy_kwargs=as_strategy_kwargs,
             )
     return wrapped_test
 
@@ -124,7 +122,7 @@ def setup_default_deadline(wrapped_test: Callable) -> None:
     existing_settings = _get_hypothesis_settings(wrapped_test)
     if (
         existing_settings is not None
-        and existing_settings.deadline == hypothesis.settings.default.deadline # type: ignore
+        and existing_settings.deadline == hypothesis.settings.default.deadline  # type: ignore
     ):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", HypothesisWarning)
@@ -163,10 +161,7 @@ def add_examples(
     test: Callable,
     operation: APIOperation,
     hook_dispatcher: HookDispatcher | None = None,
-<<<<<<< HEAD
-=======
     as_strategy_kwargs: dict[str, Any] | None = None,
->>>>>>> master
 ) -> Callable:
     """Add examples to the Hypothesis test, if they are specified in the schema."""
     from hypothesis_jsonschema._canonicalise import HypothesisRefResolutionError
@@ -174,12 +169,9 @@ def add_examples(
     try:
         examples: list[Case] = [
             get_single_example(strategy)
-<<<<<<< HEAD
-            for strategy in operation.get_strategies_from_examples()
-        ]
-    except (OperationSchemaError, HypothesisRefResolutionError, Unsatisfiable):
-=======
-            for strategy in operation.get_strategies_from_examples(as_strategy_kwargs=as_strategy_kwargs)
+            for strategy in operation.get_strategies_from_examples(
+                as_strategy_kwargs=as_strategy_kwargs
+            )
         ]
     except (
         OperationSchemaError,
@@ -188,7 +180,6 @@ def add_examples(
         SerializationNotPossible,
         SchemaError,
     ) as exc:
->>>>>>> master
         # Invalid schema:
         # In this case, the user didn't pass `--validate-schema=false` and see an error in the output anyway,
         # and no tests will be executed. For this reason, examples can be skipped
@@ -292,7 +283,7 @@ def add_single_example(strategy: st.SearchStrategy[Case], examples: list[Case]) 
         deadline=None,
         verbosity=hypothesis.Verbosity.quiet,
         phases=(hypothesis.Phase.generate,),
-        suppress_health_check=list(hypothesis.HealthCheck), # type: ignore
+        suppress_health_check=list(hypothesis.HealthCheck),  # type: ignore
     )
     def example_generating_inner_function(ex: Case) -> None:
         examples.append(ex)
