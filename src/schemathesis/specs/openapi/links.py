@@ -62,6 +62,10 @@ class Link(StatefulTest):
         logger.debug(f"from_definition -> Link source operation: {source_operation}")
         logger.debug(f"from_definition -> Link target operation: {operation}")
         logger.debug(f"from_definition -> Link definition: {definition}")
+        extension = definition.get(SCHEMATHESIS_LINK_EXTENSION)
+        logger.debug(f"from_definition -> Link source operation: {source_operation}")
+        logger.debug(f"from_definition -> Link target operation: {operation}")
+        logger.debug(f"from_definition -> Link definition: {definition}")
         return cls(
             # Pylint can't detect that the API operation is always defined at this point
             # E.g. if there is no matching operation or no operations at all, then a ValueError will be risen

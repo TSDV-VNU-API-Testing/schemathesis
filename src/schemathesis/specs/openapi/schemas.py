@@ -615,7 +615,7 @@ class BaseOpenAPISchema(BaseSchema):
             generator=data_generation_method,
             generation_config=generation_config,
             # **kwargs,
-            prev_stateful_case=kwargs["prev_stateful_case"],
+            prev_stateful_case=kwargs["prev_stateful_case"] if "prev_stateful_case" in kwargs else None,
         )
 
     def get_parameter_serializer(
