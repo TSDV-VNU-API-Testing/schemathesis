@@ -3,9 +3,10 @@ import re
 import pytest
 
 import schemathesis
+from schemathesis.constants import NOT_SET
+from schemathesis.exceptions import SchemaError
 from schemathesis.specs.openapi import expressions
 from schemathesis.stateful import ParsedData
-from schemathesis.constants import NOT_SET
 
 pytestmark = [pytest.mark.openapi_version("3.0")]
 
@@ -20,7 +21,10 @@ def test_hashable(parameters, body):
 
 def add_link(schema, target, **kwargs):
     schema.add_link(source=schema["/users/"]["POST"], target=target, status_code="201", **kwargs)
-    return schema["/users/"]["POST"].definition["responses"]["201"]["links"]
+    responses = schema["/users/"]["POST"].definition.raw["responses"]["201"]
+    if "$ref" in responses:
+        _, responses = schema.resolver.resolve(responses["$ref"])
+    return responses["links"]
 
 
 EXPECTED_LINK_PARAMETERS = {"parameters": {"userId": "$response.body#/id"}}
@@ -48,8 +52,6 @@ def test_add_link_no_operations_cache(schema_url, status_code):
     # When we add a link to the target API operation
     source = schema["/users/"]["POST"]
     target = schema["/users/{user_id}"]["GET"]
-    # And the operations are not cached
-    delattr(schema, "_operations")
     schema.add_link(
         source=source,
         target=target,
@@ -57,8 +59,10 @@ def test_add_link_no_operations_cache(schema_url, status_code):
         parameters={"userId": "$response.body#/id"},
     )
     # Then it should be added without errors
-    # And the cache cleanup should be no-op
-    links = schema["/users/"]["POST"].definition["responses"]["201"]["links"]
+    response = schema["/users/"]["POST"].definition.raw["responses"]["201"]
+    if "$ref" in response:
+        _, response = schema.resolver.resolve(response["$ref"])
+    links = response["links"]
     assert links[f"{target.method.upper()} {target.path}"] == {
         "operationId": "getUser",
         **EXPECTED_LINK_PARAMETERS,
@@ -69,7 +73,7 @@ def test_add_link_no_operations_cache(schema_url, status_code):
 def test_add_link_no_operation_id(schema_url):
     schema = schemathesis.from_uri(schema_url)
     target = schema["/users/{user_id}"]["GET"]
-    del target.definition.resolved["operationId"]
+    del target.definition.raw["operationId"]
     links = add_link(schema, target, parameters={"userId": "$response.body#/id"})
     assert links[f"{target.method.upper()} {target.path}"] == {
         "operationRef": "#/paths/~1users~1{user_id}/get",
@@ -113,12 +117,14 @@ def test_add_link_behind_a_reference(schema_url):
     }
     schema.raw_schema["paths"]["/users/"] = {"$ref": "#/components/methods/users"}
     schema.raw_schema["paths"]["/users/{user_id}"] = {"$ref": "#/components/methods/user-details"}
-    assert not hasattr(schema, "_operations")
     # And a link is added
     add_link(schema, schema["/users/{user_id}"]["GET"], parameters={"userId": "$response.body#/id"})
     # Then the source API operation should have the new link
     operation = schema["/users/"]["POST"]
-    links = operation.definition["responses"]["201"]["links"]
+    response = operation.definition.raw["responses"]["201"]
+    if "$ref" in response:
+        _, response = schema.resolver.resolve(response["$ref"])
+    links = response["links"]
     assert len(links) == 3
     assert links["GET /users/{user_id}"] == {"parameters": {"userId": "$response.body#/id"}, "operationId": "getUser"}
 
@@ -140,29 +146,24 @@ def test_add_link_nothing_is_provided(schema_url):
     "change, message",
     (
         (
-            lambda s, e: setattr(e, "method", "GET"),
-            "No such API operation: `GET /users/`. Did you mean `POST /users/`?",
+            lambda e: setattr(e, "method", "GET"),
+            "Method `GET` not found. Available methods: POST",
         ),
         (
-            lambda s, e: setattr(e, "path", "/userz/"),
-            "No such API operation: `POST /userz/`. Did you mean `POST /users/`?",
+            lambda e: setattr(e, "path", "/userz/"),
+            "`/userz/` not found. Did you mean `/users/`?",
         ),
-        (lambda s, e: setattr(e, "path", "/what?/"), "No such API operation: `POST /what?/`."),
-        (
-            lambda s, e: s.raw_schema["paths"].__setitem__("/users/", {}),
-            "No such API operation: `POST /users/`.",
-        ),
+        (lambda e: setattr(e, "path", "/what?/"), "`/what?/` not found"),
     ),
+    ids=("method-change", "path-with-suggestion", "path-without-suggestion"),
 )
 @pytest.mark.operations("create_user", "get_user", "update_user")
 def test_add_link_unknown_operation(schema_url, change, message):
     schema = schemathesis.from_uri(schema_url)
     # When the source API operation is modified and can't be found
     source = schema["/users/"]["POST"]
-    change(schema, source)
-    with pytest.raises(
-        ValueError, match=re.escape(f"{message} Check if the requested API operation passes the filters in the schema.")
-    ):
+    change(source)
+    with pytest.raises(KeyError, match=re.escape(message)):
         # Then there should be an error about it.
         schema.add_link(source=source, target="#/paths/~1users~1{user_id}/get", status_code="201", request_body="#/foo")
 
@@ -222,3 +223,39 @@ def test_link_override(empty_open_api_3_schema, schema_code, link_code):
         source=schema["/foo"]["GET"], target=schema["/foo"]["GET"], status_code=link_code, parameters={"key": "42"}
     )
     assert "links" in schema.raw_schema["paths"]["/foo"]["get"]["responses"][schema_code]
+
+
+@pytest.mark.parametrize(
+    "operation_id, expected",
+    (
+        ("get_User", "`get_User` not found. Did you mean `getUser`?"),
+        ("unknown", "`unknown` not found"),
+    ),
+)
+def test_missing_operation(operation_id, expected, empty_open_api_3_schema):
+    empty_open_api_3_schema["paths"] = {
+        "/users/": {
+            "post": {
+                "responses": {
+                    "201": {
+                        "description": "OK",
+                        "links": {
+                            "GetUserByUserId": {
+                                "operationId": operation_id,
+                                "parameters": {"path.user_id": "$response.body#/id"},
+                            },
+                        },
+                    }
+                },
+            }
+        },
+        "/users/{user_id}": {
+            "get": {"operationId": "getUser", "responses": {"200": {"description": "OK"}}},
+        },
+    }
+
+    schema = schemathesis.from_dict(empty_open_api_3_schema)
+
+    with pytest.raises(SchemaError) as exc:
+        schema.as_state_machine()
+    assert str(exc.value.__cause__) == expected

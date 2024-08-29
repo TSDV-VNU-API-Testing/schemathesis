@@ -4,10 +4,11 @@ import pytest
 import requests
 from requests import Request, Response
 
-from schemathesis.models import CaseSource, Check
+from schemathesis.constants import NOT_SET
+from schemathesis.generation import DataGenerationMethod
+from schemathesis.models import CaseSource, Check, Status
 from schemathesis.models import Request as SerializedRequest
 from schemathesis.models import Response as SerializedResponse
-from schemathesis.models import Status
 from schemathesis.runner.serialization import SerializedCheck, SerializedInteraction
 from schemathesis.sanitization import (
     DEFAULT_KEYS_TO_SANITIZE,
@@ -23,7 +24,6 @@ from schemathesis.sanitization import (
     sanitize_serialized_interaction,
     sanitize_url,
 )
-from schemathesis.constants import NOT_SET
 
 
 @pytest.fixture
@@ -145,7 +145,9 @@ def test_sanitize_request_url(request_factory):
 
 
 def test_sanitize_serialized_request():
-    request = SerializedRequest(method="POST", uri="http://user:pass@127.0.0.1/path", body=None, headers={})
+    request = SerializedRequest(
+        method="POST", uri="http://user:pass@127.0.0.1/path", body=None, body_size=None, headers={}
+    )
     sanitize_request(request)
     assert request.uri == "http://[Filtered]@127.0.0.1/path"
 
@@ -246,12 +248,13 @@ def test_sanitize_serialized_check(serialized_check):
 
 def test_sanitize_serialized_interaction(serialized_check):
     request = SerializedRequest(
-        method="POST", uri="http://user:pass@127.0.0.1/path", body=None, headers={"X-Token": "Secret"}
+        method="POST", uri="http://user:pass@127.0.0.1/path", body=None, body_size=None, headers={"X-Token": "Secret"}
     )
     response = SerializedResponse(
         status_code=500,
         message="Internal Server Error",
         body=None,
+        body_size=None,
         headers={"X-Token": ["Secret"]},
         encoding=None,
         http_version="1.1",
@@ -259,7 +262,12 @@ def test_sanitize_serialized_interaction(serialized_check):
         verify=True,
     )
     interaction = SerializedInteraction(
-        request=request, response=response, checks=[serialized_check], status=Status.failure, recorded_at=""
+        request=request,
+        response=response,
+        checks=[serialized_check],
+        status=Status.failure,
+        recorded_at="",
+        data_generation_method=DataGenerationMethod.positive,
     )
     sanitize_serialized_interaction(interaction)
 

@@ -1,38 +1,42 @@
 from __future__ import annotations
+
 import io
 import json
 import pathlib
 import re
-from typing import IO, Any, Callable, cast, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any, Callable, cast
 from urllib.parse import urljoin
 
 from ... import experimental, fixups
 from ...code_samples import CodeSampleStyle
+from ...constants import NOT_SET, WAIT_FOR_SCHEMA_INTERVAL
+from ...exceptions import SchemaError, SchemaErrorType
+from ...filters import filter_set_from_components
 from ...generation import (
     DEFAULT_DATA_GENERATION_METHODS,
-    DataGenerationMethodInput,
     DataGenerationMethod,
+    DataGenerationMethodInput,
     GenerationConfig,
 )
-from ...constants import WAIT_FOR_SCHEMA_INTERVAL
-from ...exceptions import SchemaError, SchemaErrorType
 from ...hooks import HookContext, dispatch
+from ...internal.deprecation import warn_filtration_arguments
+from ...internal.output import OutputConfig
+from ...internal.validation import require_relative_url
 from ...loaders import load_schema_from_url, load_yaml
 from ...throttling import build_limiter
-from ...types import Filter, NotSet, PathLike
 from ...transports.content_types import is_json_media_type, is_yaml_media_type
 from ...transports.headers import setup_default_headers
-from ...internal.validation import require_relative_url
-from ...constants import NOT_SET
+from ...types import Filter, NotSet, PathLike
 from . import definitions, validation
 from ._vas import logger
 
 if TYPE_CHECKING:
-    from .schemas import BaseOpenAPISchema
-    from ...transports.responses import GenericResponse
     import jsonschema
     from pyrate_limiter import Limiter
+
     from ...lazy import LazySchema
+    from ...transports.responses import GenericResponse
+    from .schemas import BaseOpenAPISchema
 
 
 def _is_json_response(response: GenericResponse) -> bool:
@@ -74,11 +78,12 @@ def from_path(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     encoding: str = "utf8",
@@ -103,6 +108,7 @@ def from_path(
             force_schema_version=force_schema_version,
             data_generation_methods=data_generation_methods,
             generation_config=generation_config,
+            output_config=output_config,
             code_sample_style=code_sample_style,
             location=pathlib.Path(path).absolute().as_uri(),
             rate_limit=rate_limit,
@@ -122,11 +128,12 @@ def from_uri(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     wait_for_schema: float | None = None,
     rate_limit: str | None = None,
@@ -178,6 +185,7 @@ def from_uri(
         force_schema_version=force_schema_version,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         location=uri,
         rate_limit=rate_limit,
@@ -222,11 +230,12 @@ def from_file(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     location: str | None = None,
     rate_limit: str | None = None,
@@ -278,6 +287,7 @@ def from_file(
         force_schema_version=force_schema_version,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         location=location,
         rate_limit=rate_limit,
@@ -301,11 +311,12 @@ def from_dict(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     location: str | None = None,
     rate_limit: str | None = None,
@@ -315,6 +326,7 @@ def from_dict(
 
     :param dict raw_schema: A schema to load.
     """
+    from ... import transports
     from .schemas import OpenApi30, SwaggerV20
 
     # logger.debug(">>>>>>>>>>>>>>>>>>> /vas/deps/schemathesis/src/schemathesis/specs/openapi/loaders.py >>>> from_dict >>> raw_schema: ", raw_schema)
@@ -334,6 +346,25 @@ def from_dict(
     if rate_limit is not None:
         rate_limiter = build_limiter(rate_limit)
 
+    for name in (
+        "method",
+        "endpoint",
+        "tag",
+        "operation_id",
+        "skip_deprecated_operations",
+    ):
+        value = locals()[name]
+        if value is not None:
+            warn_filtration_arguments(name)
+    filter_set = filter_set_from_components(
+        include=True,
+        method=method,
+        endpoint=endpoint,
+        tag=tag,
+        operation_id=operation_id,
+        skip_deprecated_operations=skip_deprecated_operations,
+    )
+
     def init_openapi_2() -> SwaggerV20:
         _maybe_validate_schema(
             raw_schema, definitions.SWAGGER_20_VALIDATOR, validate_schema
@@ -342,19 +373,18 @@ def from_dict(
             raw_schema,
             app=app,
             base_url=base_url,
-            method=method,
-            endpoint=endpoint,
-            tag=tag,
-            operation_id=operation_id,
-            skip_deprecated_operations=skip_deprecated_operations,
+            filter_set=filter_set,
             validate_schema=validate_schema,
             data_generation_methods=DataGenerationMethod.ensure_list(
                 data_generation_methods
             ),
+            generation_config=generation_config or GenerationConfig(),
+            output_config=output_config or OutputConfig(),
             code_sample_style=_code_sample_style,
             location=location,
             rate_limiter=rate_limiter,
             sanitize_output=sanitize_output,
+            transport=transports.get(app),
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
@@ -369,6 +399,11 @@ def from_dict(
             and not forced
             and not OPENAPI_30_VERSION_RE.match(version)
         ):
+            if is_openapi_31:
+                raise SchemaError(
+                    SchemaErrorType.OPEN_API_EXPERIMENTAL_VERSION,
+                    f"The provided schema uses Open API {version}, which is currently not fully supported.",
+                )
             raise SchemaError(
                 SchemaErrorType.OPEN_API_UNSUPPORTED_VERSION,
                 f"The provided schema uses Open API {version}, which is currently not supported.",
@@ -382,19 +417,18 @@ def from_dict(
             raw_schema,
             app=app,
             base_url=base_url,
-            method=method,
-            endpoint=endpoint,
-            tag=tag,
-            operation_id=operation_id,
-            skip_deprecated_operations=skip_deprecated_operations,
+            filter_set=filter_set,
             validate_schema=validate_schema,
             data_generation_methods=DataGenerationMethod.ensure_list(
                 data_generation_methods
             ),
+            generation_config=generation_config or GenerationConfig(),
+            output_config=output_config or OutputConfig(),
             code_sample_style=_code_sample_style,
             location=location,
             rate_limiter=rate_limiter,
             sanitize_output=sanitize_output,
+            transport=transports.get(app),
         )
         dispatch("after_load_schema", hook_context, instance)
         return instance
@@ -494,10 +528,11 @@ def from_pytest_fixture(
     endpoint: Filter | None = NOT_SET,
     tag: Filter | None = NOT_SET,
     operation_id: Filter | None = NOT_SET,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     data_generation_methods: DataGenerationMethodInput | NotSet = NOT_SET,
     generation_config: GenerationConfig | NotSet = NOT_SET,
+    output_config: OutputConfig | NotSet = NOT_SET,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -527,18 +562,33 @@ def from_pytest_fixture(
     rate_limiter: Limiter | None = None
     if rate_limit is not None:
         rate_limiter = build_limiter(rate_limit)
-    return LazySchema(
-        fixture_name,
-        app=app,
-        base_url=base_url,
+    for name in (
+        "method",
+        "endpoint",
+        "tag",
+        "operation_id",
+        "skip_deprecated_operations",
+    ):
+        value = locals()[name]
+        if value is not None:
+            warn_filtration_arguments(name)
+    filter_set = filter_set_from_components(
+        include=True,
         method=method,
         endpoint=endpoint,
         tag=tag,
         operation_id=operation_id,
         skip_deprecated_operations=skip_deprecated_operations,
+    )
+    return LazySchema(
+        fixture_name,
+        app=app,
+        base_url=base_url,
+        filter_set=filter_set,
         validate_schema=validate_schema,
         data_generation_methods=_data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=_code_sample_style,
         rate_limiter=rate_limiter,
         sanitize_output=sanitize_output,
@@ -554,11 +604,12 @@ def from_wsgi(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -569,8 +620,9 @@ def from_wsgi(
     :param str schema_path: An in-app relative URL to the schema.
     :param app: A WSGI app instance.
     """
-    from ...transports.responses import WSGIResponse
     from werkzeug.test import Client
+
+    from ...transports.responses import WSGIResponse
 
     require_relative_url(schema_path)
     setup_default_headers(kwargs)
@@ -589,6 +641,7 @@ def from_wsgi(
         force_schema_version=force_schema_version,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         location=schema_path,
         rate_limit=rate_limit,
@@ -616,11 +669,12 @@ def from_aiohttp(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -648,6 +702,7 @@ def from_aiohttp(
         force_schema_version=force_schema_version,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         rate_limit=rate_limit,
         sanitize_output=sanitize_output,
@@ -664,11 +719,12 @@ def from_asgi(
     endpoint: Filter | None = None,
     tag: Filter | None = None,
     operation_id: Filter | None = None,
-    skip_deprecated_operations: bool = False,
+    skip_deprecated_operations: bool | None = None,
     validate_schema: bool = False,
     force_schema_version: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
     generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -698,6 +754,7 @@ def from_asgi(
         force_schema_version=force_schema_version,
         data_generation_methods=data_generation_methods,
         generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         location=schema_path,
         rate_limit=rate_limit,

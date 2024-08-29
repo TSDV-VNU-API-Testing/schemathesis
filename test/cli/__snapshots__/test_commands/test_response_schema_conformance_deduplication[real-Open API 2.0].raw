@@ -9,6 +9,8 @@ Random seed: 42
 Workers: 1
 Collected API operations: 1
 Collected API links: 0
+API probing: SUCCESS
+Schema analysis: SKIP
 
 GET /api/conformance F                                                    [100%]
 
@@ -20,7 +22,7 @@ _____________________________ GET /api/conformance _____________________________
 
     'e32ab85ed4634c38a320eb0b22460da9' is not one of ['foo']
 
-    Schema:
+    Schema at /properties/value:
 
         {
             "enum": [

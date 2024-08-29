@@ -1,23 +1,32 @@
 from __future__ import annotations
+
+import json
 import pathlib
 from functools import lru_cache
 from json import JSONDecodeError
-from typing import IO, Any, Callable, Dict, cast, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any, Callable, Dict, NoReturn, cast
 
 from ...code_samples import CodeSampleStyle
-from ...generation import DEFAULT_DATA_GENERATION_METHODS, DataGenerationMethod, DataGenerationMethodInput
 from ...constants import WAIT_FOR_SCHEMA_INTERVAL
 from ...exceptions import SchemaError, SchemaErrorType
+from ...generation import (
+    DEFAULT_DATA_GENERATION_METHODS,
+    DataGenerationMethod,
+    DataGenerationMethodInput,
+    GenerationConfig,
+)
 from ...hooks import HookContext, dispatch
+from ...internal.output import OutputConfig
+from ...internal.validation import require_relative_url
 from ...loaders import load_schema_from_url
 from ...throttling import build_limiter
-from ...types import PathLike
 from ...transports.headers import setup_default_headers
-from ...internal.validation import require_relative_url
+from ...types import PathLike
 
 if TYPE_CHECKING:
     from graphql import DocumentNode
     from pyrate_limiter import Limiter
+
     from ...transports.responses import GenericResponse
     from .schemas import GraphQLSchema
 
@@ -43,6 +52,8 @@ def from_path(
     app: Any = None,
     base_url: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     encoding: str = "utf8",
@@ -60,6 +71,8 @@ def from_path(
             base_url=base_url,
             data_generation_methods=data_generation_methods,
             code_sample_style=code_sample_style,
+            generation_config=generation_config,
+            output_config=output_config,
             location=pathlib.Path(path).absolute().as_uri(),
             rate_limit=rate_limit,
             sanitize_output=sanitize_output,
@@ -89,6 +102,7 @@ def from_url(
     base_url: str | None = None,
     port: int | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     wait_for_schema: float | None = None,
     rate_limit: str | None = None,
@@ -150,6 +164,8 @@ def from_file(
     app: Any = None,
     base_url: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     location: str | None = None,
     rate_limit: str | None = None,
@@ -167,30 +183,41 @@ def from_file(
         data = file.read()
     try:
         document = graphql.build_schema(data)
+        result = graphql.execute(document, get_introspection_query_ast())
+        # TYPES: We don't pass `is_awaitable` above, therefore `result` is of the `ExecutionResult` type
+        result = cast(graphql.ExecutionResult, result)
+        # TYPES:
+        #  - `document` is a valid schema, because otherwise `build_schema` will rise an error;
+        #  - `INTROSPECTION_QUERY` is a valid query - it is known upfront;
+        # Therefore the execution result is always valid at this point and `result.data` is not `None`
+        raw_schema = cast(Dict[str, Any], result.data)
     except Exception as exc:
-        raise SchemaError(
-            SchemaErrorType.GRAPHQL_INVALID_SCHEMA,
-            "The provided API schema does not appear to be a valid GraphQL schema",
-            extras=[entry for entry in str(exc).splitlines() if entry],
-        ) from exc
-    result = graphql.execute(document, get_introspection_query_ast())
-    # TYPES: We don't pass `is_awaitable` above, therefore `result` is of the `ExecutionResult` type
-    result = cast(graphql.ExecutionResult, result)
-    # TYPES:
-    #  - `document` is a valid schema, because otherwise `build_schema` will rise an error;
-    #  - `INTROSPECTION_QUERY` is a valid query - it is known upfront;
-    # Therefore the execution result is always valid at this point and `result.data` is not `None`
-    raw_schema = cast(Dict[str, Any], result.data)
+        try:
+            raw_schema = json.loads(data)
+            if not isinstance(raw_schema, dict) or "__schema" not in raw_schema:
+                _on_invalid_schema(exc)
+        except json.JSONDecodeError:
+            _on_invalid_schema(exc, extras=[entry for entry in str(exc).splitlines() if entry])
     return from_dict(
         raw_schema,
         app=app,
         base_url=base_url,
         data_generation_methods=data_generation_methods,
+        generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         location=location,
         rate_limit=rate_limit,
         sanitize_output=sanitize_output,
     )
+
+
+def _on_invalid_schema(exc: Exception, extras: list[str] | None = None) -> NoReturn:
+    raise SchemaError(
+        SchemaErrorType.GRAPHQL_INVALID_SCHEMA,
+        "The provided API schema does not appear to be a valid GraphQL schema",
+        extras=extras or [],
+    ) from exc
 
 
 def from_dict(
@@ -200,6 +227,8 @@ def from_dict(
     base_url: str | None = None,
     location: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -212,6 +241,7 @@ def from_dict(
     :param app: A WSGI app instance.
     :return: GraphQLSchema
     """
+    from ... import transports
     from .schemas import GraphQLSchema
 
     _code_sample_style = CodeSampleStyle.from_str(code_sample_style)
@@ -228,9 +258,12 @@ def from_dict(
         base_url=base_url,
         app=app,
         data_generation_methods=DataGenerationMethod.ensure_list(data_generation_methods),
+        generation_config=generation_config or GenerationConfig(),
+        output_config=output_config or OutputConfig(),
         code_sample_style=_code_sample_style,
         rate_limiter=rate_limiter,
         sanitize_output=sanitize_output,
+        transport=transports.get(app),
     )  # type: ignore
     dispatch("after_load_schema", hook_context, instance)
     return instance
@@ -242,6 +275,8 @@ def from_wsgi(
     *,
     base_url: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -255,6 +290,7 @@ def from_wsgi(
     :return: GraphQLSchema
     """
     from werkzeug import Client
+
     from ...transports.responses import WSGIResponse
 
     require_relative_url(schema_path)
@@ -269,6 +305,8 @@ def from_wsgi(
         base_url=base_url,
         app=app,
         data_generation_methods=data_generation_methods,
+        generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         rate_limit=rate_limit,
         sanitize_output=sanitize_output,
@@ -281,6 +319,8 @@ def from_asgi(
     *,
     base_url: str | None = None,
     data_generation_methods: DataGenerationMethodInput = DEFAULT_DATA_GENERATION_METHODS,
+    generation_config: GenerationConfig | None = None,
+    output_config: OutputConfig | None = None,
     code_sample_style: str = CodeSampleStyle.default().name,
     rate_limit: str | None = None,
     sanitize_output: bool = True,
@@ -306,6 +346,8 @@ def from_asgi(
         base_url=base_url,
         app=app,
         data_generation_methods=data_generation_methods,
+        generation_config=generation_config,
+        output_config=output_config,
         code_sample_style=code_sample_style,
         rate_limit=rate_limit,
         sanitize_output=sanitize_output,

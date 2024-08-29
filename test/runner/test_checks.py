@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import json
 from typing import Any
 
@@ -7,6 +8,7 @@ from hypothesis import given, settings
 
 import schemathesis
 from schemathesis import DataGenerationMethod, models
+from schemathesis._compat import MultipleFailures
 from schemathesis.checks import (
     content_type_conformance,
     not_a_server_error,
@@ -14,8 +16,8 @@ from schemathesis.checks import (
     response_schema_conformance,
     status_code_conformance,
 )
-from schemathesis._compat import MultipleFailures
 from schemathesis.exceptions import CheckFailed, OperationSchemaError
+from schemathesis.experimental import OPEN_API_3_1
 from schemathesis.models import OperationDefinition, TestResult
 from schemathesis.runner.impl.core import run_checks
 from schemathesis.runner.serialization import deduplicate_failures
@@ -24,9 +26,9 @@ from schemathesis.schemas import BaseSchema
 
 def make_case(schema: BaseSchema, definition: dict[str, Any]) -> models.Case:
     operation = models.APIOperation(
-        "/path", "GET", definition=OperationDefinition(definition, definition, None, []), schema=schema
+        "/path", "GET", definition=OperationDefinition(definition, definition, None), schema=schema
     )
-    return models.Case(operation)
+    return models.Case(operation, generation_time=0.0)
 
 
 @pytest.fixture()
@@ -183,10 +185,34 @@ def test_content_type_conformance_another_status_code(response_factory):
     assert_content_type_conformance(response_factory, raw_schema, "application/xml", False)
 
 
+@pytest.mark.parametrize(
+    "content_type, is_error",
+    (
+        ("application/*", False),
+        ("*/xml", False),
+        ("*/*", False),
+        ("application/json", True),
+    ),
+)
+def test_content_type_wildcards(content_type, is_error, response_factory):
+    raw_schema = {
+        "openapi": "3.0.2",
+        "info": {"title": "Test", "description": "Test", "version": "0.1.0"},
+        "paths": {
+            "/users": {
+                "get": {
+                    "responses": {"200": {"description": "Error", "content": {content_type: {"schema": {}}}}},
+                }
+            }
+        },
+    }
+    assert_content_type_conformance(response_factory, raw_schema, "application/xml", is_error)
+
+
 def assert_content_type_conformance(response_factory, raw_schema, content_type, is_error, match=None):
     schema = schemathesis.from_dict(raw_schema)
     operation = schema["/users"]["get"]
-    case = models.Case(operation)
+    case = models.Case(operation, generation_time=0.0)
     response = response_factory.requests(content_type=content_type)
     if not is_error:
         assert content_type_conformance(response, case) is None
@@ -249,7 +275,7 @@ def test_invalid_schema_on_content_type_check(response_factory):
         validate_schema=False,
     )
     operation = schema["/users"]["get"]
-    case = models.Case(operation)
+    case = models.Case(operation, generation_time=0.0)
     response = response_factory.requests(content_type="application/json")
     # Then an error should be risen
     with pytest.raises(OperationSchemaError):
@@ -330,6 +356,29 @@ def test_response_schema_conformance_swagger(swagger_20, content, definition, re
 def test_response_schema_conformance_openapi(openapi_30, content, definition, response_factory):
     response = response_factory.requests(content=content)
     case = make_case(openapi_30, definition)
+    assert response_schema_conformance(response, case) is None
+    assert case.operation.is_response_valid(response)
+
+
+def test_response_schema_conformance_openapi_31_boolean(openapi_30, response_factory):
+    response = response_factory.requests(content=b'{"success": true}')
+    case = make_case(
+        openapi_30,
+        {
+            "responses": {
+                "default": {
+                    "description": "text",
+                    "content": {
+                        "application/json": {
+                            "schema": {"type": "object", "properties": {"success": True}, "required": ["success"]}
+                        }
+                    },
+                }
+            }
+        },
+    )
+    OPEN_API_3_1.enable()
+    openapi_30.raw_schema["openapi"] = "3.1.0"
     assert response_schema_conformance(response, case) is None
     assert case.operation.is_response_valid(response)
 

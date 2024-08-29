@@ -31,7 +31,7 @@ After setting up Docker and obtaining a copy of the project, you'll be ready to 
 
 ## Command-line
 
-The examples below will the following environment variables and a shell alias to avoid visual clutter:
+The examples below will include the following environment variables and a shell alias to avoid visual clutter:
 
 ```shell
 export SCHEMA_URL="http://127.0.0.1:5123/openapi.json"
@@ -54,12 +54,12 @@ schemathesis-docker run $SCHEMA_URL
 schemathesis-docker run --checks all $SCHEMA_URL
 ```
 
-### Selecting what to test
+### Narrowing the testing scope
 
 Only `POST` operations with paths starting with `/internal`:
 
 ```shell
-schemathesis-docker run --method POST --endpoint '^/internal' $SCHEMA_URL
+schemathesis-docker run --include-method POST --include-path-regex '^/internal' $SCHEMA_URL
 ```
 
 ### Verifying responses with a custom check

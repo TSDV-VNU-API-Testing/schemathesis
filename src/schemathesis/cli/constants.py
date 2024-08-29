@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 from enum import IntEnum, unique
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import hypothesis
+
 MIN_WORKERS = 1
 DEFAULT_WORKERS = MIN_WORKERS
 MAX_WORKERS = 64
@@ -26,6 +28,12 @@ class Phase(IntEnum):
 
         return Phase[self.name]
 
+    @staticmethod
+    def filter_from_all(variants: list[Phase]) -> list[hypothesis.Phase]:
+        from hypothesis import Phase
+
+        return list(set(Phase) - {Phase.explain} - set(variants))
+
 
 @unique
 class HealthCheck(IntEnum):
@@ -34,11 +42,15 @@ class HealthCheck(IntEnum):
     filter_too_much = 2
     too_slow = 3
     large_base_example = 7
+    all = 8
 
-    def as_hypothesis(self) -> hypothesis.HealthCheck:
+    def as_hypothesis(self) -> list[hypothesis.HealthCheck]:
         from hypothesis import HealthCheck
 
-        return HealthCheck[self.name]
+        if self.name == "all":
+            return list(HealthCheck)
+
+        return [HealthCheck[self.name]]
 
 
 @unique

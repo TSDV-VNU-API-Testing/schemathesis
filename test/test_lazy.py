@@ -1,4 +1,8 @@
+import sys
+
 import pytest
+
+from schemathesis._dependency_versions import IS_PYRATE_LIMITER_ABOVE_3
 
 
 def test_default(testdir):
@@ -29,7 +33,6 @@ lazy_schema = schemathesis.from_pytest_fixture("simple_schema")
 @lazy_schema.parametrize()
 def test_(request, case):
     request.config.HYPOTHESIS_CASES += 1
-
 """
     )
     result = testdir.runpytest("-v", "-s")
@@ -71,16 +74,16 @@ def test_(request, case):
     result.assert_outcomes(passed=1, failed=1)
     if is_older_subtests:
         expected = [
-            r"test_invalid_operation.py::test_[GET /v1/valid] PASSED                   [ 25%]",
-            r"test_invalid_operation.py::test_[GET /v1/invalid] FAILED                 [ 50%]",
-            r"test_invalid_operation.py::test_[GET /v1/users] PASSED                   [ 75%]",
+            r"test_invalid_operation.py::test_\[GET /v1/valid\] PASSED *\[ 25%\]",
+            r"test_invalid_operation.py::test_\[GET /v1/invalid\] FAILED *\[ 50%\]",
+            r"test_invalid_operation.py::test_\[GET /v1/users\] PASSED *\[ 75%\]",
             r".*1 passed",
         ]
     else:
         expected = [
-            r"test_invalid_operation.py::test_[GET /v1/valid] SUBPASS                  [ 25%]",
-            r"test_invalid_operation.py::test_[GET /v1/invalid] SUBFAIL                [ 50%]",
-            r"test_invalid_operation.py::test_[GET /v1/users] SUBPASS                  [ 75%]",
+            r"test_invalid_operation.py::test_\[GET /v1/valid\] SUBPASS +\[ 25%\]",
+            r"test_invalid_operation.py::test_\[GET /v1/invalid\] SUBFAIL +\[ 50%\]",
+            r"test_invalid_operation.py::test_\[GET /v1/users\] SUBPASS +\[ 75%\]",
             r".*1 passed",
         ]
     result.stdout.re_match_lines(expected)
@@ -170,6 +173,7 @@ def test_d(request, case):
     result.stdout.re_match_lines([r"Hypothesis calls: 6$"])
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
 def test_with_parametrize_filters_override(testdir):
     # When the test uses method / endpoint filter
     testdir.make_test(
@@ -181,13 +185,17 @@ def test_a(request, case):
     request.config.HYPOTHESIS_CASES += 1
     assert case.method == "GET"
 
-@lazy_schema.parametrize(endpoint="/second", method=None)
+@lazy_schema.include(path_regex="/second", method=None).parametrize()
 def test_b(request, case):
     request.config.HYPOTHESIS_CASES += 1
     assert case.full_path == "/v1/second"
 
 @lazy_schema.parametrize()
 def test_c(request, case):
+    request.config.HYPOTHESIS_CASES += 1
+
+@lazy_schema.exclude(method=["post"]).parametrize()
+def test_d(request, case):
     request.config.HYPOTHESIS_CASES += 1
 """,
         paths={
@@ -205,24 +213,26 @@ def test_c(request, case):
             },
         },
         method="POST",
-        endpoint="/first",
+        path="/first",
         tag="foo",
     )
     result = testdir.runpytest("-v", "-s")
     # Then the filters should be applied to the generated tests
-    result.assert_outcomes(passed=3)
+    result.assert_outcomes(passed=4)
     result.stdout.re_match_lines(
         [
             r"test_with_parametrize_filters_override.py::test_a PASSED",
             r"test_with_parametrize_filters_override.py::test_b PASSED",
             r"test_with_parametrize_filters_override.py::test_c PASSED",
-            r".*3 passed",
+            r"test_with_parametrize_filters_override.py::test_d PASSED",
+            r".*4 passed",
         ]
     )
     # test_a: 2 = 2 GET to /first, /second
     # test_b: 2 = 1 GET + 1 POST to /second
     # test_c: 1 = 1 POST to /first
-    result.stdout.re_match_lines([r"Hypothesis calls: 5$"])
+    # test_d: 1 = 1 POST to /first
+    result.stdout.re_match_lines([r"Hypothesis calls: 6$"])
 
 
 def test_with_schema_filters(testdir):
@@ -274,7 +284,7 @@ def test_b(request, case):
             },
         },
         method="GET",
-        endpoint="/first",
+        path="/first",
     )
     result = testdir.runpytest("-v", "-s")
     # Then the filters should be applied to the generated tests
@@ -508,7 +518,8 @@ def test_b(case):
     result.assert_outcomes(passed=2)
 
 
-def test_parametrized_fixture(testdir, openapi3_base_url, is_older_subtests):
+@pytest.mark.parametrize("settings", ("", "@settings(deadline=None)"))
+def test_parametrized_fixture(testdir, openapi3_base_url, is_older_subtests, settings):
     # When the used pytest fixture is parametrized via `params`
     testdir.make_test(
         f"""
@@ -521,6 +532,7 @@ def parametrized_lazy_schema(request):
 lazy_schema = schemathesis.from_pytest_fixture("parametrized_lazy_schema")
 
 @lazy_schema.parametrize()
+{settings}
 def test_(case):
     case.call()
 """,
@@ -865,7 +877,6 @@ def test_(case):
     assert "def run_subtest" not in stdout
     assert "def collecting_wrapper" not in stdout
     assert "def __flaky" not in stdout
-    assert stdout.count("test_flaky.py:3") == 1
 
 
 @pytest.mark.operations("failure")
@@ -896,6 +907,17 @@ def test_(case):
 
 @pytest.mark.operations("success")
 def test_rate_limit(testdir, openapi3_schema_url):
+    if IS_PYRATE_LIMITER_ABOVE_3:
+        assertion = """
+    assert limiter.bucket_factory.bucket.rates[0].limit == 1
+    assert limiter.bucket_factory.bucket.rates[0].interval == 1000
+"""
+    else:
+        assertion = """
+    rate = limiter._rates[0]
+    assert rate.interval == 1
+    assert rate.limit == 1
+        """
     testdir.make_test(
         f"""
 @pytest.fixture
@@ -907,10 +929,33 @@ lazy_schema = schemathesis.from_pytest_fixture("api_schema", rate_limit="1/s")
 @lazy_schema.parametrize()
 def test_(case):
     limiter = case.operation.schema.rate_limiter
-    rate = limiter._rates[0]
-    assert rate.interval == 1
-    assert rate.limit == 1
+    {assertion}
 """,
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(passed=1)
+
+
+@pytest.mark.operations("path_variable", "custom_format")
+def test_override(testdir, openapi3_base_url, openapi3_schema_url):
+    testdir.make_test(
+        f"""
+@pytest.fixture
+def api_schema():
+    return schemathesis.from_uri('{openapi3_schema_url}')
+
+lazy_schema = schemathesis.from_pytest_fixture("api_schema")
+
+@lazy_schema.parametrize(endpoint=["path_variable", "custom_format"])
+@lazy_schema.override(path_parameters={{"key": "foo"}}, query={{"id": "bar"}})
+def test(case):
+    if "key" in case.operation.path_parameters:
+        assert case.path_parameters["key"] == "foo"
+        assert "id" not in (case.query or {{}}), "`id` is present"
+    if "id" in case.operation.query:
+        assert case.query["id"] == "bar"
+        assert "key" not in (case.path_parameters or {{}}), "`key` is present"
+"""
     )
     result = testdir.runpytest()
     result.assert_outcomes(passed=1)

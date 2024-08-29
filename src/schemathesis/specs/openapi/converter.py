@@ -1,9 +1,10 @@
 from __future__ import annotations
+
 from itertools import chain
 from typing import Any, Callable
 
-from ...internal.jsonschema import traverse_schema
 from ...internal.copy import fast_deepcopy
+from ...internal.jsonschema import traverse_schema
 
 
 def to_json_schema(
@@ -58,11 +59,15 @@ def forbid_properties(schema: dict[str, Any], forbidden: list[str]) -> None:
     not_schema["required"] = list(set(chain(already_forbidden, forbidden)))
 
 
-def is_write_only(schema: dict[str, Any]) -> bool:
+def is_write_only(schema: dict[str, Any] | bool) -> bool:
+    if isinstance(schema, bool):
+        return False
     return schema.get("writeOnly", False) or schema.get("x-writeOnly", False)
 
 
-def is_read_only(schema: dict[str, Any]) -> bool:
+def is_read_only(schema: dict[str, Any] | bool) -> bool:
+    if isinstance(schema, bool):
+        return False
     return schema.get("readOnly", False)
 
 

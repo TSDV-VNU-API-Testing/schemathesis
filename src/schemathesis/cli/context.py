@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -7,10 +8,16 @@ from typing import TYPE_CHECKING
 
 from ..code_samples import CodeSampleStyle
 from ..internal.deprecation import deprecated_property
+from ..internal.output import OutputConfig
+from ..internal.result import Result
+from ..runner.probes import ProbeRun
 from ..runner.serialization import SerializedTestResult
+from ..service.models import AnalysisResult
 
 if TYPE_CHECKING:
     import hypothesis
+
+    from ..stateful.sink import StateMachineSink
 
 
 @dataclass
@@ -49,6 +56,10 @@ class ExecutionContext:
     verbosity: int = 0
     code_sample_style: CodeSampleStyle = CodeSampleStyle.default()
     report: ServiceReportContext | FileReportContext | None = None
+    probes: list[ProbeRun] | None = None
+    analysis: Result[AnalysisResult, Exception] | None = None
+    output_config: OutputConfig = field(default_factory=OutputConfig)
+    state_machine_sink: StateMachineSink | None = None
 
     @deprecated_property(removed_in="4.0", replacement="show_trace")
     def show_errors_tracebacks(self) -> bool:

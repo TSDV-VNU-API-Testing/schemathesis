@@ -9,7 +9,9 @@ from requests import Response
 from schemathesis import DataGenerationMethod
 from schemathesis.cli import ALL_CHECKS_NAMES, ALL_TARGETS_NAMES
 from schemathesis.code_samples import CodeSampleStyle
+from schemathesis.experimental import GLOBAL_EXPERIMENTS
 from schemathesis.fixups import ALL_FIXUPS
+from schemathesis.runner.events import DEFAULT_INTERNAL_ERROR_MESSAGE
 from schemathesis.stateful import Stateful
 
 
@@ -63,7 +65,10 @@ def csv_strategy(enum):
 
 
 # The following strategies generate CLI parameters, for example "--workers=5" or "--exitfirst"
-@settings(suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture], deadline=None)
+@settings(
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+    deadline=None,
+)
 @given(
     params=st.fixed_dictionaries(
         {},
@@ -81,12 +86,14 @@ def csv_strategy(enum):
             "stateful-recursion-limit": st.integers(),
             "max-response-time": st.integers(),
             "validate-schema": st.booleans(),
+            "generation-with-security-parameters": st.booleans(),
             "hypothesis-database": st.text(),
             "hypothesis-deadline": st.integers() | st.none(),
             "hypothesis-max-examples": st.integers(),
             "hypothesis-report-multiple-bugs": st.booleans(),
             "hypothesis-seed": st.integers(),
             "hypothesis-verbosity": st.sampled_from([item.name for item in Verbosity]),
+            "experimental": st.sampled_from([experiment.name for experiment in GLOBAL_EXPERIMENTS.available]),
         },
     ).map(lambda params: [f"--{key}={value}" for key, value in params.items()]),
     flags=st.fixed_dictionaries(
@@ -94,7 +101,7 @@ def csv_strategy(enum):
         optional={
             key: st.booleans()
             for key in (
-                "show-errors-tracebacks",
+                "show-trace",
                 "exitfirst",
                 "hypothesis-derandomize",
                 "dry-run",
@@ -129,11 +136,25 @@ def csv_strategy(enum):
 @pytest.mark.usefixtures("mocked_schema")
 def test_valid_parameters_combos(cli, schema_url, params, flags, multiple_params, csv_params, tmp_path):
     report = tmp_path / "temp.tar.gz"
-    result = cli.run(schema_url, *params, *multiple_params, *flags, *csv_params, f"--report={report}")
+    debug = tmp_path / "debug.log"
+    result = cli.run(
+        schema_url,
+        *params,
+        *multiple_params,
+        *flags,
+        *csv_params,
+        f"--report={report}",
+        "--show-trace",
+        f"--debug-output-file={debug}",
+    )
     check_result(result)
 
 
-@settings(deadline=None, phases=[Phase.explicit, Phase.generate])
+@settings(
+    deadline=None,
+    phases=[Phase.explicit, Phase.generate],
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
+)
 @given(schema=urls() | paths() | st.text(), base_url=urls() | paths() | st.text() | st.none())
 @example(schema="//bla", base_url=None)
 @example(schema="/\x00", base_url=None)
@@ -149,6 +170,7 @@ def test_schema_validity(cli, schema, base_url):
 
 def check_result(result):
     assert not (result.exception and not isinstance(result.exception, SystemExit)), result.stdout
+    assert DEFAULT_INTERNAL_ERROR_MESSAGE not in result.stdout, result.stdout
 
 
 def test_not_handled_error(mocker, cli, schema_url):

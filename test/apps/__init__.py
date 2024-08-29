@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 
 import click
@@ -62,5 +63,4 @@ def run_app(port: int, operations: list[openapi.schema.Operation], spec: str, fr
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
     run_app()

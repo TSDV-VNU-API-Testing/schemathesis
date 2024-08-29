@@ -14,24 +14,20 @@ RAW_SCHEMA = {
         "/users/": {
             "get": {
                 "responses": {"200": {"description": "OK"}},
+                "tags": ["Users"],
+                "operationId": "getUsers",
             },
-            "post": {
-                "deprecated": True,
-                "responses": {"200": {"description": "OK"}},
-            },
+            "post": {"deprecated": True, "responses": {"200": {"description": "OK"}}, "tags": ["Users"]},
         },
         "/users/{user_id}/": {
             "patch": {
+                "operationId": "patchUser",
                 "responses": {"200": {"description": "OK"}},
             },
         },
         "/orders/": {
-            "get": {
-                "responses": {"200": {"description": "OK"}},
-            },
-            "post": {
-                "responses": {"200": {"description": "OK"}},
-            },
+            "get": {"responses": {"200": {"description": "OK"}}, "tags": ["Orders", "SomeOther"]},
+            "post": {"responses": {"200": {"description": "OK"}}, "tags": []},
         },
     },
 }
@@ -47,6 +43,9 @@ SINGLE_INCLUDE_CASES = (
     ({"path": "/users/"}, [USERS_GET, USERS_POST]),
     ({"path": ["/users/", "/orders/"]}, NO_PATCH),
     ({"path_regex": "^/users/"}, [USERS_GET, USERS_POST, USER_ID_PATCH]),
+    ({"tag": "Users"}, [USERS_GET, USERS_POST]),
+    ({"tag": ["Users", "Orders"]}, [USERS_GET, USERS_POST, ORDERS_GET]),
+    ({"tag_regex": ".+rs"}, [USERS_GET, USERS_POST, ORDERS_GET]),
     ({"method": "GET"}, [USERS_GET, ORDERS_GET]),
     ({"method": ["GET", "PATCH"]}, [USERS_GET, USER_ID_PATCH, ORDERS_GET]),
     ({"method_regex": "^P"}, [USERS_POST, USER_ID_PATCH, ORDERS_POST]),
@@ -54,6 +53,9 @@ SINGLE_INCLUDE_CASES = (
     ({"name": ["GET /users/", "POST /orders/"]}, [USERS_GET, ORDERS_POST]),
     ({"name_regex": "^P.+ /(users|orders)/"}, [USERS_POST, USER_ID_PATCH, ORDERS_POST]),
     ({"name_regex": re.compile("^p.+ /(USERS|orders)/", re.IGNORECASE)}, [USERS_POST, USER_ID_PATCH, ORDERS_POST]),
+    ({"operation_id": "getUsers"}, [USERS_GET]),
+    ({"operation_id": ["getUsers", "patchUser"]}, [USERS_GET, USER_ID_PATCH]),
+    ({"operation_id_regex": ".+Use.+"}, [USERS_GET, USER_ID_PATCH]),
 )
 MULTI_INCLUDE_CASES = [
     (({"path": "/users/"}, {"path": "/orders/"}), NO_PATCH),
@@ -127,7 +129,7 @@ def case_id(case):
         (
             [
                 ("include", {"path": "/users/"}),
-                ("exclude", {"func": lambda ctx: ctx.operation.definition.get("deprecated") is True}),
+                ("exclude", {"func": lambda ctx: ctx.operation.definition.raw.get("deprecated") is True}),
             ],
             [USERS_GET],
         ),
@@ -136,9 +138,12 @@ def case_id(case):
 )
 def test_matchers(chain, expected):
     filter_set = filters.FilterSet()
+    schema = SCHEMA
     for method, kwargs in chain:
         getattr(filter_set, method)(**kwargs)
+        schema = getattr(schema, method)(**kwargs)
     assert filter_set.apply_to(OPERATIONS) == expected
+    assert schema.filter_set.apply_to(OPERATIONS) == expected
 
 
 def matcher_func(ctx):
@@ -168,6 +173,36 @@ def test_filter_repr(matchers, expected):
 
 def test_matcher_repr():
     assert repr(filters.Matcher.for_value("method", "POST")) == "<Matcher: method='POST'>"
+
+
+@pytest.mark.parametrize(
+    "args, kwargs, expected",
+    (
+        (
+            (matcher_func,),
+            {},
+            "[<Filter: [matcher_func]>]",
+        ),
+        (
+            (matcher_func,),
+            {"deprecated": True},
+            "[<Filter: [is_deprecated]>, <Filter: [matcher_func]>]",
+        ),
+        (
+            (),
+            {"deprecated": True},
+            "[<Filter: [is_deprecated]>]",
+        ),
+    ),
+)
+def test_exclude_custom(args, kwargs, expected):
+    lazy_schema = schemathesis.from_pytest_fixture("name")
+    schemas = [SCHEMA, lazy_schema]
+    for schema in schemas:
+        assert (
+            repr(sorted(schema.exclude(*args, **kwargs).filter_set._excludes, key=lambda x: x.matchers[0].label))
+            == expected
+        )
 
 
 def test_sanity_checks():

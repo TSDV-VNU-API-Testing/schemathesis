@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import binascii
 import os
 from dataclasses import dataclass
@@ -10,21 +11,21 @@ from typing import (
     Collection,
     Dict,
     Generator,
-    cast,
     Protocol,
+    cast,
     runtime_checkable,
 )
 
-from .internal.copy import fast_deepcopy
 from ._xml import _to_xml
+from .internal.copy import fast_deepcopy
+from .internal.jsonschema import traverse_schema
+from .specs.openapi._vas import logger
 from .transports.content_types import (
     is_json_media_type,
     is_plain_text_media_type,
     is_xml_media_type,
     parse_content_type,
 )
-from .specs.openapi._vas import logger
-
 
 if TYPE_CHECKING:
     from .models import Case
@@ -135,6 +136,8 @@ def _to_json(value: Any) -> dict[str, Any]:
     if isinstance(value, bytes):
         # Possible to get via explicit examples, e.g. `externalValue`
         return {"data": value}
+    if isinstance(value, Binary):
+        return {"data": value.data}
     if value is None:
         # If the body is `None`, then the app expects `null`, but `None` is also the default value for the `json`
         # argument in `requests.request` and `werkzeug.Client.open` which makes these cases indistinguishable.
@@ -143,13 +146,20 @@ def _to_json(value: Any) -> dict[str, Any]:
     return {"json": value}
 
 
-@register("application/json")
+@register("application/json", aliases=("text/json",))
 class JSONSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return _to_json(value)
 
     def as_werkzeug(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return _to_json(value)
+
+
+def _replace_binary(value: dict) -> dict:
+    return {
+        key: value.data if isinstance(value, Binary) else value
+        for key, value in value.items()
+    }
 
 
 def _to_yaml(value: Any) -> dict[str, Any]:
@@ -162,10 +172,23 @@ def _to_yaml(value: Any) -> dict[str, Any]:
 
     if isinstance(value, bytes):
         return {"data": value}
+    if isinstance(value, Binary):
+        return {"data": value.data}
+    if isinstance(value, (list, dict)):
+        value = traverse_schema(value, _replace_binary)
     return {"data": yaml.dump(value, Dumper=SafeDumper)}
 
 
-@register("text/yaml", aliases=("text/x-yaml", "application/x-yaml", "text/vnd.yaml"))
+@register(
+    "text/yaml",
+    aliases=(
+        "text/x-yaml",
+        "text/vnd.yaml",
+        "text/yml",
+        "application/yaml",
+        "application/x-yaml",
+    ),
+)
 class YAMLSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return _to_yaml(value)
@@ -174,7 +197,7 @@ class YAMLSerializer:
         return _to_yaml(value)
 
 
-@register("application/xml")
+@register("application/xml", aliases=("text/xml",))
 class XMLSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         return _to_xml(
@@ -244,7 +267,7 @@ def _encode_multipart(value: Any, boundary: str) -> bytes:
     return body.getvalue()
 
 
-@register("multipart/form-data")  # type: ignore
+@register("multipart/form-data", aliases=("multipart/mixed",))
 class MultipartSerializer:
     def as_requests(self, context: SerializerContext, value: Any) -> dict[str, Any]:
         if isinstance(value, bytes):

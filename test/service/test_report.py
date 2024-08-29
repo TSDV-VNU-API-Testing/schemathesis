@@ -9,9 +9,9 @@ import pytest
 
 import schemathesis
 from schemathesis.cli import ExecutionContext
+from schemathesis.internal.datetime import current_datetime
 from schemathesis.runner import events
 from schemathesis.service import ci, metadata, report
-from schemathesis.internal.datetime import current_datetime
 
 
 def test_add_events(openapi3_schema_url, read_report):
@@ -24,9 +24,13 @@ def test_add_events(openapi3_schema_url, read_report):
     data = payload.getvalue()
     with read_report(data) as tar:
         members = tar.getmembers()
-        assert len(members) == 6
+        assert len(members) == 10
         expected = (
             "Initialized",
+            "BeforeProbing",
+            "AfterProbing",
+            "BeforeAnalysis",
+            "AfterAnalysis",
             "BeforeExecution",
             "AfterExecution",
             "BeforeExecution",

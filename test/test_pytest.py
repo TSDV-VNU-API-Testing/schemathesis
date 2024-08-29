@@ -1,9 +1,9 @@
 import platform
+import sys
 
 import pytest
 
 from schemathesis.constants import DEFAULT_DEADLINE, RECURSIVE_REFERENCE_ERROR_MESSAGE
-from schemathesis._dependency_versions import IS_PYTEST_ABOVE_54
 
 
 def test_pytest_parametrize_fixture(testdir):
@@ -126,11 +126,7 @@ def test_b(case, a):
 """,
     )
     # When a test is run with treating warnings as errors
-    if IS_PYTEST_ABOVE_54:
-        args = ("-Werror", "--asyncio-mode=strict")
-    else:
-        args = ("-Werror",)
-    result = testdir.runpytest(*args)
+    result = testdir.runpytest("-Werror", "--asyncio-mode=strict")
     # There should be no errors. There are no warnings from Schemathesis pytest plugin.
     result.assert_outcomes(passed=3)
 
@@ -209,6 +205,39 @@ def test(case):
     result.stdout.re_match_lines([".+given must be called with at least one argument"])
 
 
+def test_given_with_explicit_examples(testdir):
+    # When `schema.given` is used for a schema with explicit examples
+    testdir.make_test(
+        """
+@schema.parametrize(method="get")
+@schema.given(data=st.data())
+def test(case, data):
+    pass
+        """,
+        paths={
+            "/users": {
+                "get": {
+                    "parameters": [
+                        {
+                            "name": "anyKey",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "string"},
+                            "example": "header0",
+                        }
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+        schema_name="simple_openapi.yaml",
+    )
+    # Then the wrapped test should fail with an error
+    result = testdir.runpytest("-v")
+    result.assert_outcomes(failed=1)
+    result.stdout.re_match_lines([".+Unsupported test setup"])
+
+
 def test_given_no_override(testdir):
     # When `schema.given` is used multiple times on the same test
     testdir.make_test(
@@ -258,16 +287,16 @@ def test(case):
 
 
 @pytest.mark.parametrize("style", ("python", "curl"))
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
 def test_failure_reproduction_message(testdir, openapi3_base_url, style):
     # When a test fails
     testdir.make_test(
         f"""
 schema.base_url = "{openapi3_base_url}"
 
-@schema.parametrize(endpoint="failure")
+@schema.include(path_regex="failure").parametrize()
 def test(case):
-    response = case.call()
-    case.validate_response(response, code_sample_style="{style}")
+    case.call_and_validate(code_sample_style="{style}")
     """,
         paths={"/failure": {"get": {"responses": {"200": {"description": "OK"}}}}},
     )
@@ -331,6 +360,7 @@ def test(case):
     assert "CHECKING!" in result.stdout.str()
 
 
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
 def test_excluded_checks(testdir, openapi3_base_url):
     # When the user would like to exclude a check
     testdir.make_test(
@@ -339,7 +369,7 @@ from schemathesis.checks import status_code_conformance, not_a_server_error
 
 schema.base_url = "{openapi3_base_url}"
 
-@schema.parametrize(endpoint="failure")
+@schema.include(path_regex="failure").parametrize()
 def test(case):
     response = case.call()
     case.validate_response(response, excluded_checks=(status_code_conformance, not_a_server_error))
@@ -624,6 +654,7 @@ def test(value):
 
 
 @pytest.mark.parametrize("value", (True, False))
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
 def test_output_sanitization(testdir, openapi3_base_url, value):
     auth = "secret-auth"
     testdir.make_test(
@@ -631,10 +662,9 @@ def test_output_sanitization(testdir, openapi3_base_url, value):
 
 schema.base_url = "{openapi3_base_url}"
 
-@schema.parametrize(endpoint="failure")
+@schema.include(path_regex="failure").parametrize()
 def test(case):
-    response = case.call(headers={{'Authorization': '{auth}'}})
-    case.validate_response(response)
+    case.call_and_validate(headers={{'Authorization': '{auth}'}})
 """,
         paths={"/failure": {"get": {"responses": {"200": {"description": "OK"}}}}},
         sanitize_output=value,
@@ -647,3 +677,230 @@ def test(case):
     else:
         expected = rf"E           curl -X GET -H 'Authorization: {auth}' {openapi3_base_url}/failure"
     assert expected in result.stdout.lines
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
+def test_unsatisfiable_example(testdir, openapi3_base_url):
+    testdir.make_test(
+        f"""
+schema.base_url = "{openapi3_base_url}"
+
+@schema.include(path_regex="success").parametrize()
+@settings(phases=[Phase.explicit])
+def test(case):
+    pass
+""",
+        paths={
+            "/success": {
+                "post": {
+                    "parameters": [
+                        # This parameter is not satisfiable
+                        {
+                            "name": "key",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "integer", "minimum": 5, "maximum": 4},
+                        }
+                    ],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "foo": {"type": "string", "example": "foo example string"},
+                                    },
+                                },
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+        schema_name="simple_openapi.yaml",
+    )
+    result = testdir.runpytest()
+    # We should skip checking for a server error
+    result.assert_outcomes(failed=1)
+    assert (
+        "hypothesis.errors.Unsatisfiable: Failed to generate test cases from examples for this API operation"
+        in result.stdout.str()
+    )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
+@pytest.mark.parametrize(
+    "phases, expected",
+    (
+        (
+            "Phase.explicit",
+            "Failed to generate test cases from examples for this API operation because of "
+            r"unsupported regular expression `^[\w\s\-\/\pL,.#;:()']+$`",
+        ),
+        (
+            "Phase.explicit, Phase.generate",
+            "Failed to generate test cases for this API operation because of "
+            r"unsupported regular expression `^[\w\s\-\/\pL,.#;:()']+$`",
+        ),
+    ),
+)
+def test_invalid_regex_example(testdir, openapi3_base_url, phases, expected):
+    testdir.make_test(
+        f"""
+
+schema.base_url = "{openapi3_base_url}"
+
+@schema.include(path_regex="success").parametrize()
+@settings(phases=[{phases}])
+def test(case):
+    pass
+""",
+        paths={
+            "/success": {
+                "post": {
+                    "parameters": [
+                        {"name": "key", "in": "query", "required": True, "schema": {"type": "integer"}, "example": 42}
+                    ],
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "region": {
+                                            "nullable": True,
+                                            "pattern": "^[\\w\\s\\-\\/\\pL,.#;:()']+$",
+                                            "type": "string",
+                                        },
+                                    },
+                                    "required": ["region"],
+                                    "type": "object",
+                                }
+                            }
+                        },
+                        "required": True,
+                    },
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+        schema_name="simple_openapi.yaml",
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(failed=1)
+    assert expected in result.stdout.str()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
+@pytest.mark.parametrize(
+    "phases",
+    ("Phase.explicit", "Phase.explicit, Phase.generate"),
+)
+def test_invalid_header_in_example(testdir, openapi3_base_url, phases):
+    testdir.make_test(
+        f"""
+schema.base_url = "{openapi3_base_url}"
+
+@schema.include(path_regex="success").parametrize()
+@settings(phases=[{phases}])
+def test(case):
+    pass
+""",
+        paths={
+            "/success": {
+                "post": {
+                    "parameters": [
+                        {
+                            "name": "SESSION",
+                            "in": "header",
+                            "required": True,
+                            "schema": {"type": "integer"},
+                            "example": "test\ntest",
+                        }
+                    ],
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+        schema_name="simple_openapi.yaml",
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(failed=1)
+    assert "Failed to generate test cases from examples for this API" in result.stdout.str()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
+def test_non_serializable_example(testdir, openapi3_base_url):
+    testdir.make_test(
+        f"""
+
+schema.base_url = "{openapi3_base_url}"
+
+@schema.include(path_regex="success").parametrize()
+@settings(phases=[Phase.explicit])
+def test(case):
+    pass
+""",
+        paths={
+            "/success": {
+                "post": {
+                    "parameters": [
+                        {"name": "key", "in": "query", "required": True, "schema": {"type": "integer"}, "example": 42}
+                    ],
+                    "requestBody": {
+                        "content": {
+                            "image/jpeg": {
+                                "schema": {"format": "base64", "type": "string"},
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "OK"}},
+                }
+            }
+        },
+        schema_name="simple_openapi.yaml",
+    )
+    result = testdir.runpytest()
+    # We should skip checking for a server error
+    result.assert_outcomes(failed=1)
+    assert (
+        "Failed to generate test cases from examples for this API operation because of unsupported payload media types"
+        in result.stdout.str()
+    )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 9), reason="Decorator syntax available from Python 3.9")
+@pytest.mark.operations("path_variable", "custom_format")
+def test_override(testdir, openapi3_base_url, openapi3_schema_url):
+    testdir.make_test(
+        f"""
+schema = schemathesis.from_uri('{openapi3_schema_url}')
+
+@schema.include(path_regex="path_variable|custom_format").parametrize()
+@schema.override(path_parameters={{"key": "foo"}}, query={{"id": "bar"}})
+def test(case):
+    if "key" in case.operation.path_parameters:
+        assert case.path_parameters["key"] == "foo"
+        assert "id" not in (case.query or {{}}), "`id` is present"
+    if "id" in case.operation.query:
+        assert case.query["id"] == "bar"
+        assert "key" not in (case.path_parameters or {{}}), "`key` is present"
+"""
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(passed=2)
+
+
+def test_override_double(testdir, openapi3_base_url, openapi3_schema_url):
+    testdir.make_test(
+        """
+@schema.parametrize()
+@schema.override(path_parameters={"key": "foo"}, query={"id": "bar"})
+@schema.override(path_parameters={"key": "foo"}, query={"id": "bar"})
+def test(case):
+    pass
+"""
+    )
+    result = testdir.runpytest()
+    result.assert_outcomes(errors=1)
+    assert "`test` has already been decorated with `override`" in result.stdout.str()

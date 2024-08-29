@@ -19,7 +19,7 @@ jobs:
             tag-suffix: "-bookworm"
 
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4.1.7
 
       - name: Docker meta
         id: meta
@@ -55,7 +55,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -68,7 +68,7 @@ jobs:
     name: Build and publish package to pypi.org
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4.1.1
+      - uses: actions/checkout@v4.1.7
         with:
           fetch-depth: 1
 

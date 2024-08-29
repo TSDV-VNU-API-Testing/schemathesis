@@ -26,10 +26,19 @@ RECURSIVE_REFERENCE_ERROR_MESSAGE = (
     "recursive references in the operation definition. See more information in "
     "this issue - https://github.com/schemathesis/schemathesis/issues/947"
 )
+GIVEN_AND_EXPLICIT_EXAMPLES_ERROR_MESSAGE = (
+    "Unsupported test setup. Tests using `@schema.given` cannot be combined with explicit schema examples in the same "
+    "function. Separate these tests into distinct functions to avoid conflicts."
+)
 SERIALIZERS_SUGGESTION_MESSAGE = (
     "You can register your own serializer with `schemathesis.serializer` "
     "and Schemathesis will be able to make API calls with this media type. \n"
     "See https://schemathesis.readthedocs.io/en/stable/how.html#payload-serialization for more information."
+)
+NO_LINKS_ERROR_MESSAGE = (
+    "Stateful testing requires at least one OpenAPI link in the schema, but no links detected. "
+    "Please add OpenAPI links to enable stateful testing or use stateless tests instead. \n"
+    "See https://schemathesis.readthedocs.io/en/stable/stateful.html#how-to-specify-connections for more information."
 )
 EXTENSIONS_DOCUMENTATION_URL = (
     "https://schemathesis.readthedocs.io/en/stable/extending.html"

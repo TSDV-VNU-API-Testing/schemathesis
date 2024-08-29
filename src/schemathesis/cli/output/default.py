@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import base64
 import os
 import platform
 import shutil
 import textwrap
 import time
 from importlib import metadata
-from itertools import groupby
 from queue import Queue
-from typing import Any, Generator, cast
+from typing import TYPE_CHECKING, Any, Generator, Literal, cast
 
 import click
 
-from ... import service
-from ...code_samples import CodeSampleStyle
+from ... import experimental, service
 from ...constants import (
     DISCORD_LINK,
     FALSE_VALUES,
@@ -25,22 +22,36 @@ from ...constants import (
     SCHEMATHESIS_TEST_CASE_HEADER,
     SCHEMATHESIS_VERSION,
 )
-from ...exceptions import RuntimeErrorType, prepare_response_payload
+from ...exceptions import (
+    RuntimeErrorType,
+    extract_requests_exception_details,
+    format_exception,
+)
 from ...experimental import GLOBAL_EXPERIMENTS
+from ...internal.output import prepare_response_payload
+from ...internal.result import Ok
 from ...models import Status
 from ...runner import events
 from ...runner.events import InternalErrorType, SchemaErrorType
-from ...runner.serialization import (
-    SerializedCheck,
-    SerializedError,
-    SerializedTestResult,
-    deduplicate_failures,
-)
-from ...specs.openapi._vas import logger
+from ...runner.probes import ProbeOutcome
+from ...runner.serialization import SerializedError, SerializedTestResult
+from ...service.models import AnalysisSuccess, ErrorState, UnknownExtension
+from ...stateful import events as stateful_events
+from ...stateful.sink import StateMachineSink
 from ..context import ExecutionContext, FileReportContext, ServiceReportContext
 from ..handlers import EventHandler
+from ..reporting import (
+    TEST_CASE_ID_TITLE,
+    get_runtime_error_suggestion,
+    group_by_case,
+    split_traceback,
+)
+
+if TYPE_CHECKING:
+    import requests
 
 SPINNER_REPETITION_NUMBER = 10
+IO_ENCODING = os.getenv("PYTHONIOENCODING", "utf-8")
 
 
 def get_terminal_width() -> int:
@@ -66,15 +77,15 @@ def get_percentage(position: int, length: int) -> str:
 
 
 def display_execution_result(
-    context: ExecutionContext, event: events.AfterExecution
+    context: ExecutionContext, status: Literal["success", "failure", "error", "skip"]
 ) -> None:
     """Display an appropriate symbol for the given event's execution result."""
     symbol, color = {
-        Status.success: (".", "green"),
-        Status.failure: ("F", "red"),
-        Status.error: ("E", "red"),
-        Status.skip: ("S", "yellow"),
-    }[event.status]
+        "success": (".", "green"),
+        "failure": ("F", "red"),
+        "error": ("E", "red"),
+        "skip": ("S", "yellow"),
+    }[status]
     context.current_line_length += len(symbol)
     click.secho(symbol, nl=False, fg=color)
 
@@ -147,7 +158,9 @@ def display_hypothesis_output(hypothesis_output: list[str]) -> None:
 
 def display_errors(context: ExecutionContext, event: events.Finished) -> None:
     """Display all errors in the test run."""
-    if not event.has_errors:
+    probes = context.probes or []
+    has_probe_errors = any(probe.outcome == ProbeOutcome.ERROR for probe in probes)
+    if not event.has_errors and not has_probe_errors:
         return
 
     display_section_name("ERRORS")
@@ -164,6 +177,12 @@ def display_errors(context: ExecutionContext, event: events.Finished) -> None:
         should_display_full_traceback_message |= display_single_error(context, result)
     if event.generic_errors:
         display_generic_errors(context, event.generic_errors)
+    if has_probe_errors:
+        display_section_name("API Probe errors", "_", fg="red")
+        for probe in probes:
+            if probe.error is not None:
+                error = SerializedError.from_exception(probe.error)
+                _display_error(context, error)
     if should_display_full_traceback_message and not context.show_trace:
         click.secho(
             "\nAdd this option to your command line parameters to see full tracebacks: --show-trace",
@@ -180,7 +199,12 @@ def display_single_error(
 ) -> bool:
     display_subsection(result)
     should_display_full_traceback_message = False
+    first = True
     for error in result.errors:
+        if first:
+            first = False
+        else:
+            click.echo()
         should_display_full_traceback_message |= _display_error(context, error)
     return should_display_full_traceback_message
 
@@ -195,15 +219,21 @@ def display_generic_errors(
 
 def display_full_traceback_message(error: SerializedError) -> bool:
     # Some errors should not trigger the message that suggests to show full tracebacks to the user
-    return not error.exception.startswith(
-        (
-            "DeadlineExceeded",
-            "OperationSchemaError",
-            "requests.exceptions",
-            "SerializationNotPossible",
-            "hypothesis.errors.FailedHealthCheck",
-            "hypothesis.errors.InvalidArgument: Scalar ",
+    return (
+        not error.exception.startswith(
+            (
+                "DeadlineExceeded",
+                "OperationSchemaError",
+                "requests.exceptions",
+                "SerializationNotPossible",
+                "hypothesis.errors.FailedHealthCheck",
+                "hypothesis.errors.InvalidArgument: Scalar ",
+                "hypothesis.errors.InvalidArgument: min_size=",
+                "hypothesis.errors.Unsatisfiable",
+            )
         )
+        and "can never generate an example, because min_size is larger than Hypothesis supports."
+        not in error.exception
     )
 
 
@@ -263,12 +293,12 @@ def _display_error(context: ExecutionContext, error: SerializedError) -> bool:
         click.echo(error.exception)
     if error.extras:
         extras = error.extras
-    elif context.show_trace:
-        extras = _split_traceback(error.exception_with_traceback)
+    elif context.show_trace and error.type.has_useful_traceback:
+        extras = split_traceback(error.exception_with_traceback)
     else:
         extras = []
     _display_extras(extras)
-    suggestion = RUNTIME_ERROR_SUGGESTIONS.get(error.type)
+    suggestion = get_runtime_error_suggestion(error.type)
     _maybe_display_tip(suggestion)
     return display_full_traceback_message(error)
 
@@ -287,7 +317,16 @@ def display_failures(context: ExecutionContext, event: events.Finished) -> None:
         display_failures_for_single_test(context, result)
 
 
-TEST_CASE_ID_TITLE = "Test Case ID"
+if IO_ENCODING != "utf-8":
+
+    def _secho(text: str, **kwargs: Any) -> None:
+        text = text.encode(IO_ENCODING, errors="replace").decode("utf-8")
+        click.secho(text, **kwargs)
+
+else:
+
+    def _secho(text: str, **kwargs: Any) -> None:
+        click.secho(text, **kwargs)
 
 
 def display_failures_for_single_test(
@@ -322,63 +361,32 @@ def display_failures_for_single_test(
                 message = check.message
             click.secho(f"\n- {title}", fg="red", bold=True)
             if message:
-                message = textwrap.indent(message, prefix="    ")
-                click.secho(f"\n{message}", fg="red")
+                _secho(f"\n{message}", fg="red")
             if check_idx + 1 == len(checks):
                 if check.response is not None:
                     status_code = check.response.status_code
                     reason = get_reason(status_code)
                     response = bold(f"[{check.response.status_code}] {reason}")
                     click.echo(f"\n{response}:")
-
-                    response_body = check.response.body
-                    if check.response is not None and response_body is not None:
-                        if not response_body:
+                    if check.response.body is not None:
+                        if not check.response.body:
                             click.echo("\n    <EMPTY>")
                         else:
                             encoding = check.response.encoding or "utf8"
                             try:
-                                payload = base64.b64decode(response_body).decode(
-                                    encoding
+                                # Checked that is not None
+                                body = cast(bytes, check.response.deserialize_body())
+                                payload = body.decode(encoding)
+                                payload = prepare_response_payload(
+                                    payload, config=context.output_config
                                 )
-                                payload = prepare_response_payload(payload)
                                 payload = textwrap.indent(
                                     f"\n`{payload}`", prefix="    "
                                 )
                                 click.echo(payload)
                             except UnicodeDecodeError:
                                 click.echo("\n    <BINARY>")
-
-        click.echo(
-            f"\n{bold('Reproduce with')}: \n\n    {code_sample}\n",
-        )
-
-
-def group_by_case(
-    checks: list[SerializedCheck], code_sample_style: CodeSampleStyle
-) -> Generator[tuple[str, Generator[SerializedCheck, None, None]], None, None]:
-    checks = deduplicate_failures(checks)
-    checks = sorted(checks, key=lambda c: _by_unique_code_sample(c, code_sample_style))
-    yield from groupby(checks, lambda c: _by_unique_code_sample(c, code_sample_style))  # type: ignore
-
-
-def _by_unique_code_sample(
-    check: SerializedCheck, code_sample_style: CodeSampleStyle
-) -> str:
-    request_body = (
-        # Ignore decoding errors caused by invalid base64
-        base64.b64decode(check.example.body).decode('utf-8', 'ignore')
-        if check.example.body is not None
-        else None
-    )
-    return code_sample_style.generate(
-        method=check.example.method,
-        url=check.example.url,
-        body=request_body,
-        headers=check.example.headers,
-        verify=check.example.verify,
-        extra_headers=check.example.extra_headers,
-    )
+        _secho(f"\n{bold('Reproduce with')}: \n\n    {code_sample}\n")
 
 
 def display_application_logs(context: ExecutionContext, event: events.Finished) -> None:
@@ -397,11 +405,101 @@ def display_single_log(result: SerializedTestResult) -> None:
     click.echo("\n\n".join(result.logs))
 
 
+def display_analysis(context: ExecutionContext) -> None:
+    """Display schema analysis details."""
+    import requests.exceptions
+
+    if context.analysis is None:
+        return
+    display_section_name("SCHEMA ANALYSIS")
+    if isinstance(context.analysis, Ok):
+        analysis = context.analysis.ok()
+        click.echo()
+        if isinstance(analysis, AnalysisSuccess):
+            click.secho(analysis.message, bold=True)
+            click.echo("\nAnalysis took: {:.2f}ms".format(analysis.elapsed))
+            if analysis.extensions:
+                known = []
+                failed = []
+                unknown = []
+                for extension in analysis.extensions:
+                    if isinstance(extension, UnknownExtension):
+                        unknown.append(extension)
+                    elif isinstance(extension.state, ErrorState):
+                        failed.append(extension)
+                    else:
+                        known.append(extension)
+                if known:
+                    click.echo("\nThe following extensions have been applied:\n")
+                    for extension in known:
+                        click.echo(f"  - {extension.summary}")
+                if failed:
+                    click.echo("\nThe following extensions errored:\n")
+                    for extension in failed:
+                        click.echo(f"  - {extension.summary}")
+                    suggestion = f"Please, consider reporting this to our issue tracker:\n\n  {ISSUE_TRACKER_URL}"
+                    click.secho(
+                        f"\n{click.style('Tip:', bold=True, fg='green')} {suggestion}"
+                    )
+                if unknown:
+                    noun = "extension" if len(unknown) == 1 else "extensions"
+                    specific_noun = (
+                        "this extension" if len(unknown) == 1 else "these extensions"
+                    )
+                    title = click.style("Compatibility Notice", bold=True)
+                    click.secho(f"\n{title}: {len(unknown)} {noun} not recognized:\n")
+                    for extension in unknown:
+                        click.echo(f"  - {extension.summary}")
+                    suggestion = (
+                        f"Consider updating the CLI to add support for {specific_noun}."
+                    )
+                    click.secho(
+                        f"\n{click.style('Tip:', bold=True, fg='green')} {suggestion}"
+                    )
+            else:
+                click.echo("\nNo extensions have been applied.")
+        else:
+            click.echo("An error happened during schema analysis:\n")
+            click.secho(f"  {analysis.message}", bold=True)
+        click.echo()
+    else:
+        exception = context.analysis.err()
+        suggestion = None
+        if isinstance(exception, requests.exceptions.HTTPError):
+            response = exception.response
+            click.secho("Error\n", fg="red", bold=True)
+            _display_service_network_error(response)
+            click.echo()
+            return None
+        elif isinstance(exception, requests.RequestException):
+            message, extras = extract_requests_exception_details(exception)
+            suggestion = "Please check your network connection and try again."
+            title = "Network Error"
+        else:
+            traceback = format_exception(exception, True)
+            extras = split_traceback(traceback)
+            title = "Internal Error"
+            message = f"We apologize for the inconvenience. This appears to be an internal issue.\nPlease, consider reporting the following details to our issue tracker:\n\n  {ISSUE_TRACKER_URL}"
+            suggestion = "Please update your CLI to the latest version and try again."
+        click.secho(f"{title}\n", fg="red", bold=True)
+        click.echo(message)
+        _display_extras(extras)
+        _maybe_display_tip(suggestion)
+        click.echo()
+
+
 def display_statistic(context: ExecutionContext, event: events.Finished) -> None:
     """Format and print statistic collected by :obj:`models.TestResult`."""
     display_section_name("SUMMARY")
     click.echo()
     total = event.total
+    if context.state_machine_sink is not None:
+        click.echo(
+            context.state_machine_sink.transitions.to_formatted_table(
+                get_terminal_width()
+            )
+        )
+        click.echo()
     if event.is_empty or not total:
         click.secho("No checks were performed.", bold=True)
 
@@ -513,7 +611,7 @@ def display_report_metadata(meta: service.Metadata) -> None:
             if value is not None:
                 click.secho(f"  -> {key}: {value}")
         click.echo()
-    click.secho(f"Compressed report size: {meta.size / 1024.:,.0f} KB", bold=True)
+    click.secho(f"Compressed report size: {meta.size / 1024.0:,.0f} KB", bold=True)
 
 
 def display_service_unauthorized(hostname: str) -> None:
@@ -537,37 +635,47 @@ def display_service_error(event: service.Error, message_prefix: str = "") -> Non
 
     if isinstance(event.exception, HTTPError):
         response = cast(Response, event.exception.response)
-        status_code = response.status_code
-        if 500 <= status_code <= 599:
-            click.secho(f"Schemathesis.io responded with HTTP {status_code}", fg="red")
-            # Server error, should be resolved soon
-            click.secho(
-                "\nIt is likely that we are already notified about the issue and working on a fix\n"
-                "Please, try again in 30 minutes",
-                fg="red",
-            )
-        elif status_code == 401:
-            # Likely an invalid token
-            click.echo("Your CLI is not authenticated.")
-            display_service_unauthorized("schemathesis.io")
-        else:
-            try:
-                data = response.json()
-                detail = data["detail"]
-                click.secho(f"{message_prefix}{detail}", fg="red")
-            except Exception:
-                # Other client-side errors are likely caused by a bug on the CLI side
-                click.secho(
-                    "We apologize for the inconvenience. This appears to be an internal issue.\n"
-                    "Please, consider reporting the following details to our issue "
-                    f"tracker:\n\n  {ISSUE_TRACKER_URL}\n\nResponse: {response.text!r}\n"
-                    f"Headers: {response.headers!r}",
-                    fg="red",
-                )
+        _display_service_network_error(response, message_prefix)
     elif isinstance(event.exception, RequestException):
         ask_to_report(event, report_to_issues=False)
     else:
         ask_to_report(event)
+
+
+def _display_service_network_error(
+    response: requests.Response, message_prefix: str = ""
+) -> None:
+    status_code = response.status_code
+    if 500 <= status_code <= 599:
+        click.secho(f"Schemathesis.io responded with HTTP {status_code}", fg="red")
+        # Server error, should be resolved soon
+        click.secho(
+            "\nIt is likely that we are already notified about the issue and working on a fix\n"
+            "Please, try again in 30 minutes",
+            fg="red",
+        )
+    elif status_code == 401:
+        # Likely an invalid token
+        click.echo("Your CLI is not authenticated.")
+        display_service_unauthorized("schemathesis.io")
+    else:
+        try:
+            data = response.json()
+            detail = data["detail"]
+            click.secho(f"{message_prefix}{detail}", fg="red")
+        except Exception:
+            # Other client-side errors are likely caused by a bug on the CLI side
+            click.secho(
+                "We apologize for the inconvenience. This appears to be an internal issue.\n"
+                "Please, consider reporting the following details to our issue "
+                f"tracker:\n\n  {ISSUE_TRACKER_URL}\n\nResponse: {response.text!r}\n"
+                f"Status: {response.status_code}\n"
+                f"Headers: {response.headers!r}",
+                fg="red",
+            )
+            _maybe_display_tip(
+                "Please update your CLI to the latest version and try again."
+            )
 
 
 SERVICE_ERROR_MESSAGE = "An error happened during uploading reports to Schemathesis.io"
@@ -672,6 +780,7 @@ SCHEMA_ERROR_SUGGESTIONS = {
     # OpenAPI specification issues
     SchemaErrorType.OPEN_API_UNSPECIFIED_VERSION: f"Include the version in the schema or manually set it with {bold('`--force-schema-version`')}.",
     SchemaErrorType.OPEN_API_UNSUPPORTED_VERSION: f"Proceed with {bold('`--force-schema-version`')}. Caution: May not be fully supported.",
+    SchemaErrorType.OPEN_API_EXPERIMENTAL_VERSION: f"Proceed with {bold('`--experimental=openapi-3.1`. Caution: May not be fully supported.')}",
     SchemaErrorType.OPEN_API_INVALID_SCHEMA: DISABLE_SCHEMA_VALIDATION_SUGGESTION,
     # YAML specific issues
     SchemaErrorType.YAML_NUMERIC_STATUS_CODES: "Convert numeric status codes to strings.",
@@ -688,10 +797,6 @@ def should_skip_suggestion(
         event.subtype == SchemaErrorType.CONNECTION_OTHER
         and context.wait_for_schema is not None
     )
-
-
-def _split_traceback(traceback: str) -> list[str]:
-    return [entry for entry in traceback.splitlines() if entry]
 
 
 def _display_extras(extras: list[str]) -> None:
@@ -716,7 +821,7 @@ def display_internal_error(
     if event.type == InternalErrorType.SCHEMA:
         extras = event.extras
     elif context.show_trace:
-        extras = _split_traceback(event.exception_with_traceback)
+        extras = split_traceback(event.exception_with_traceback)
     else:
         extras = [event.exception]
     _display_extras(extras)
@@ -765,7 +870,52 @@ def handle_initialized(context: ExecutionContext, event: events.Initialized) -> 
     click.secho(f"Collected API links: {links_count}", bold=True)
     if isinstance(context.report, ServiceReportContext):
         click.secho("Report to Schemathesis.io: ENABLED", bold=True)
-    if context.operations_count >= 1:
+
+
+def handle_before_probing(
+    context: ExecutionContext, event: events.BeforeProbing
+) -> None:
+    click.secho("API probing: ...\r", bold=True, nl=False)
+
+
+def handle_after_probing(context: ExecutionContext, event: events.AfterProbing) -> None:
+    context.probes = event.probes
+    status = "SKIP"
+    if event.probes is not None:
+        for probe in event.probes:
+            if probe.outcome in (ProbeOutcome.SUCCESS, ProbeOutcome.FAILURE):
+                # The probe itself has been executed
+                status = "SUCCESS"
+            elif probe.outcome == ProbeOutcome.ERROR:
+                status = "ERROR"
+    click.secho(f"API probing: {status}", bold=True, nl=False)
+    click.echo()
+
+
+def handle_before_analysis(
+    context: ExecutionContext, event: events.BeforeAnalysis
+) -> None:
+    click.secho("Schema analysis: ...\r", bold=True, nl=False)
+
+
+def handle_after_analysis(
+    context: ExecutionContext, event: events.AfterAnalysis
+) -> None:
+    context.analysis = event.analysis
+    status = "SKIP"
+    if event.analysis is not None:
+        if isinstance(event.analysis, Ok) and isinstance(
+            event.analysis.ok(), AnalysisSuccess
+        ):
+            status = "SUCCESS"
+        else:
+            status = "ERROR"
+    click.secho(f"Schema analysis: {status}", bold=True, nl=False)
+    click.echo()
+    operations_count = cast(
+        int, context.operations_count
+    )  # INVARIANT: should not be `None`
+    if operations_count >= 1:
         click.echo()
 
 
@@ -795,7 +945,7 @@ def handle_after_execution(
     """Display the execution result + current progress at the same line with the method / path names."""
     context.operations_processed += 1
     context.results.append(event.result)
-    display_execution_result(context, event)
+    display_execution_result(context, event.status.value)
     display_percentage(context, event)
 
 
@@ -806,6 +956,7 @@ def handle_finished(context: ExecutionContext, event: events.Finished) -> None:
     display_errors(context, event)
     display_failures(context, event)
     display_application_logs(context, event)
+    display_analysis(context)
     display_statistic(context, event)
     click.echo()
     display_summary(event)
@@ -813,6 +964,10 @@ def handle_finished(context: ExecutionContext, event: events.Finished) -> None:
 
 def handle_interrupted(context: ExecutionContext, event: events.Interrupted) -> None:
     click.echo()
+    _handle_interrupted(context)
+
+
+def _handle_interrupted(context: ExecutionContext) -> None:
     context.is_interrupted = True
     display_section_name("KeyboardInterrupt", "!", bold=False)
 
@@ -824,24 +979,62 @@ def handle_internal_error(
     raise click.Abort
 
 
+def handle_stateful_event(
+    context: ExecutionContext, event: events.StatefulEvent
+) -> None:
+    if isinstance(event.data, stateful_events.RunStarted):
+        context.state_machine_sink = event.data.state_machine.sink()
+        if not experimental.STATEFUL_ONLY.is_enabled:
+            click.echo()
+        click.secho("Stateful tests\n", bold=True)
+    elif (
+        isinstance(event.data, stateful_events.ScenarioFinished)
+        and not event.data.is_final
+    ):
+        if event.data.status == stateful_events.ScenarioStatus.INTERRUPTED:
+            _handle_interrupted(context)
+        elif event.data.status != stateful_events.ScenarioStatus.REJECTED:
+            display_execution_result(context, event.data.status.value)
+    elif isinstance(event.data, stateful_events.RunFinished):
+        click.echo()
+    # It is initialized in `RunStarted`
+    sink = cast(StateMachineSink, context.state_machine_sink)
+    sink.consume(event.data)
+
+
+def handle_after_stateful_execution(
+    context: ExecutionContext, event: events.AfterStatefulExecution
+) -> None:
+    context.results.append(event.result)
+
+
 class DefaultOutputStyleHandler(EventHandler):
     def handle_event(
         self, context: ExecutionContext, event: events.ExecutionEvent
     ) -> None:
         """Choose and execute a proper handler for the given event."""
         if isinstance(event, events.Initialized):
-            logger.debug("It's handled by initialized handler")
             handle_initialized(context, event)
-        if isinstance(event, events.BeforeExecution):
-            logger.debug("It's handled by before_ex handler")
+        elif isinstance(event, events.BeforeProbing):
+            handle_before_probing(context, event)
+        elif isinstance(event, events.AfterProbing):
+            handle_after_probing(context, event)
+        elif isinstance(event, events.BeforeAnalysis):
+            handle_before_analysis(context, event)
+        elif isinstance(event, events.AfterAnalysis):
+            handle_after_analysis(context, event)
+        elif isinstance(event, events.BeforeExecution):
             handle_before_execution(context, event)
-        if isinstance(event, events.AfterExecution):
-            logger.debug("It's handled by after_ex handler")
+        elif isinstance(event, events.AfterExecution):
             context.hypothesis_output.extend(event.hypothesis_output)
             handle_after_execution(context, event)
-        if isinstance(event, events.Finished):
+        elif isinstance(event, events.Finished):
             handle_finished(context, event)
-        if isinstance(event, events.Interrupted):
+        elif isinstance(event, events.Interrupted):
             handle_interrupted(context, event)
-        if isinstance(event, events.InternalError):
+        elif isinstance(event, events.InternalError):
             handle_internal_error(context, event)
+        elif isinstance(event, events.StatefulEvent):
+            handle_stateful_event(context, event)
+        elif isinstance(event, events.AfterStatefulExecution):
+            handle_after_stateful_execution(context, event)

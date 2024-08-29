@@ -3,8 +3,8 @@ from dataclasses import fields
 import pytest
 
 import schemathesis
-from schemathesis.specs.openapi.definitions import OPENAPI_30_VALIDATOR, SWAGGER_20_VALIDATOR
 from schemathesis.internal.copy import fast_deepcopy
+from schemathesis.specs.openapi.definitions import OPENAPI_30_VALIDATOR, SWAGGER_20_VALIDATOR
 
 
 def make_object_schema(is_loose=False, **properties):
@@ -136,7 +136,7 @@ def make_openapi_3_schema(empty_open_api_3_schema):
 @pytest.fixture
 def assert_parameters():
     def _compare(left, right):
-        assert type(left) == type(right)
+        assert type(left) is type(right)
         for field in fields(left):
             left_attr = getattr(left, field.name)
             right_attr = getattr(right, field.name)

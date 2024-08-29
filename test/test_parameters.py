@@ -7,8 +7,8 @@ from hypothesis.errors import NoSuchExample
 
 import schemathesis
 from schemathesis.exceptions import OperationSchemaError
-from schemathesis.specs.openapi._hypothesis import is_valid_header, get_default_format_strategies
 from schemathesis.internal.copy import fast_deepcopy
+from schemathesis.specs.openapi._hypothesis import get_default_format_strategies, is_valid_header
 
 from .utils import as_param
 
@@ -434,7 +434,7 @@ def test_json_media_type(testdir):
 @settings(max_examples=10, deadline=None)
 @schema.parametrize()
 def test_(case):
-    kwargs = case.as_requests_kwargs()
+    kwargs = case.as_transport_kwargs()
     assert kwargs["headers"]["Content-Type"] == "application/problem+json"
     assert "key" in kwargs["json"]
     assert_requests_call(case)
@@ -552,11 +552,7 @@ def test_null_body(api_schema):
     def test(case):
         assume(case.body is None)
         # Then it should be possible to send `null`
-        if case.app is not None:
-            response = case.call_wsgi()
-        else:
-            response = case.call()
-        case.validate_response(response)
+        response = case.call_and_validate()
         if case.app is None:
             data = response.content
         else:
@@ -576,9 +572,8 @@ def test_read_only(schema_url):
     @settings(max_examples=1, deadline=None)
     def test(case):
         # Then `writeOnly` should not affect the response schema
-        response = case.call()
+        response = case.call_and_validate()
         assert "write" not in response.json()
-        case.validate_response(response)
 
     test()
 
@@ -595,9 +590,8 @@ def test_write_only(schema_url):
         assert "write" in case.body
         assert "read" not in case.body
         # And `readOnly` should only occur in responses
-        response = case.call()
+        response = case.call_and_validate()
         assert "write" not in response.json()
-        case.validate_response(response)
 
     test()
 

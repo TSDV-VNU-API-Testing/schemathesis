@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from hypothesis.errors import InvalidDefinition
 from hypothesis.stateful import RuleBasedStateMachine
 
-from ..constants import NOT_SET
-from ..models import Case, APIOperation, CheckFunction
+from .._dependency_versions import HYPOTHESIS_HAS_STATEFUL_NAMING_IMPROVEMENTS
+from ..constants import NO_LINKS_ERROR_MESSAGE, NOT_SET
+from ..exceptions import UsageError
+from ..models import APIOperation, Case, CheckFunction
+from .runner import StatefulTestRunner, StatefulTestRunnerConfig
+from .sink import StateMachineSink
+from .statistic import TransitionStats
 
 if TYPE_CHECKING:
-    from ..schemas import BaseSchema
     import hypothesis
-    from ..transports.responses import GenericResponse
     from requests.structures import CaseInsensitiveDict
+
+    from ..schemas import BaseSchema
+    from ..transports.responses import GenericResponse
 
 
 @dataclass
@@ -23,6 +31,10 @@ class StepResult:
     response: GenericResponse
     case: Case
     elapsed: float
+
+
+def _normalize_name(name: str) -> str:
+    return re.sub(r"\W|^(?=\d)", "_", name).replace("__", "_")
 
 
 class APIStateMachine(RuleBasedStateMachine):
@@ -36,9 +48,16 @@ class APIStateMachine(RuleBasedStateMachine):
     # attribute will be renamed in the future
     bundles: ClassVar[dict[str, CaseInsensitiveDict]]  # type: ignore
     schema: BaseSchema
+    # A template for transition statistics that can be filled with data from the state machine during its execution
+    _transition_stats_template: ClassVar[TransitionStats]
 
     def __init__(self) -> None:
-        super().__init__()  # type: ignore
+        try:
+            super().__init__()  # type: ignore
+        except InvalidDefinition as exc:
+            if "defines no rules" in str(exc):
+                raise UsageError(NO_LINKS_ERROR_MESSAGE) from None
+            raise
         self.setup()
 
     def _pretty_print(self, value: Any) -> str:
@@ -46,11 +65,27 @@ class APIStateMachine(RuleBasedStateMachine):
             # State machines suppose to be reproducible, hence it is OK to get kwargs here
             kwargs = self.get_call_kwargs(value)
             return _print_case(value, kwargs)
-        if isinstance(value, tuple) and len(value) == 2:
-            result, direction = value
-            wrapper = _DirectionWrapper(direction)
-            return super()._pretty_print((result, wrapper))  # type: ignore
         return super()._pretty_print(value)  # type: ignore
+
+    if HYPOTHESIS_HAS_STATEFUL_NAMING_IMPROVEMENTS:
+
+        def _new_name(self, target: str) -> str:
+            target = _normalize_name(target)
+            return super()._new_name(target)  # type: ignore
+
+    def _get_target_for_result(self, result: StepResult) -> str | None:
+        raise NotImplementedError
+
+    def _add_result_to_targets(self, targets: tuple[str, ...], result: StepResult | None) -> None:
+        if result is None:
+            return None
+        target = self._get_target_for_result(result)
+        if target is not None:
+            super()._add_result_to_targets((target,), result)
+
+    @classmethod
+    def format_rules(cls) -> str:
+        raise NotImplementedError
 
     @classmethod
     def run(cls, *, settings: hypothesis.settings | None = None) -> None:
@@ -58,6 +93,18 @@ class APIStateMachine(RuleBasedStateMachine):
         from . import run_state_machine_as_test
 
         return run_state_machine_as_test(cls, settings=settings)
+
+    @classmethod
+    def runner(cls, *, config: StatefulTestRunnerConfig | None = None) -> StatefulTestRunner:
+        """Create a runner for this state machine."""
+        from .runner import StatefulTestRunnerConfig
+
+        return StatefulTestRunner(cls, config=config or StatefulTestRunnerConfig())
+
+    @classmethod
+    def sink(cls) -> StateMachineSink:
+        """Create a sink to collect events into."""
+        return StateMachineSink(transitions=cls._transition_stats_template.copy())
 
     def setup(self) -> None:
         """Hook method that runs unconditionally in the beginning of each test scenario.
@@ -74,14 +121,16 @@ class APIStateMachine(RuleBasedStateMachine):
     def transform(self, result: StepResult, direction: Direction, case: Case) -> Case:
         raise NotImplementedError
 
-    def _step(self, case: Case, previous: tuple[StepResult, Direction] | None = None) -> StepResult:
+    def _step(self, case: Case, previous: StepResult | None = None, link: Direction | None = None) -> StepResult | None:
         # This method is a proxy that is used under the hood during the state machine initialization.
         # The whole point of having it is to make it possible to override `step`; otherwise, custom "step" is ignored.
         # It happens because, at the point of initialization, the final class is not yet created.
         __tracebackhide__ = True
-        return self.step(case, previous)
+        if previous is not None and link is not None:
+            return self.step(case, (previous, link))
+        return self.step(case, None)
 
-    def step(self, case: Case, previous: tuple[StepResult, Direction] | None = None) -> StepResult:
+    def step(self, case: Case, previous: tuple[StepResult, Direction] | None = None) -> StepResult | None:
         """A single state machine step.
 
         :param Case case: Generated test case data that should be sent in an API call to the tested API operation.
@@ -90,6 +139,8 @@ class APIStateMachine(RuleBasedStateMachine):
         Schemathesis prepares data, makes a call and validates the received response.
         It is the most high-level point to extend the testing process. You probably don't need it in most cases.
         """
+        from ..specs.openapi.checks import use_after_free
+
         __tracebackhide__ = True
         if previous is not None:
             result, direction = previous
@@ -100,7 +151,7 @@ class APIStateMachine(RuleBasedStateMachine):
         response = self.call(case, **kwargs)
         elapsed = time.monotonic() - start
         self.after_call(response, case)
-        self.validate_response(response, case)
+        self.validate_response(response, case, additional_checks=(use_after_free,))
         return self.store_result(response, case, elapsed)
 
     def before_call(self, case: Case) -> None:
@@ -169,13 +220,12 @@ class APIStateMachine(RuleBasedStateMachine):
         :return: Response from the application under test.
 
         Note that WSGI/ASGI applications are detected automatically in this method. Depending on the result of this
-        detection the state machine will call ``call``, ``call_wsgi`` or ``call_asgi`` methods.
+        detection the state machine will call the ``call`` method.
 
         Usually, you don't need to override this method unless you are building a different state machine on top of this
         one and want to customize the transport layer itself.
         """
-        method = self._get_call_method(case)
-        return method(**kwargs)
+        return case.call(**kwargs)
 
     def get_call_kwargs(self, case: Case) -> dict[str, Any]:
         """Create custom keyword arguments that will be passed to the :meth:`Case.call` method.
@@ -193,15 +243,6 @@ class APIStateMachine(RuleBasedStateMachine):
         The above example disables the server's TLS certificate verification.
         """
         return {}
-
-    def _get_call_method(self, case: Case) -> Callable:
-        if case.app is not None:
-            from starlette.applications import Starlette
-
-            if isinstance(case.app, Starlette):
-                return case.call_asgi
-            return case.call_wsgi
-        return case.call
 
     def validate_response(
         self, response: GenericResponse, case: Case, additional_checks: tuple[CheckFunction, ...] = ()
@@ -264,15 +305,3 @@ class Direction:
 
     def set_data(self, case: Case, elapsed: float, **kwargs: Any) -> None:
         raise NotImplementedError
-
-
-@dataclass(repr=False)
-class _DirectionWrapper:
-    """Purely to avoid modification of `Direction.__repr__`."""
-
-    direction: Direction
-
-    def __repr__(self) -> str:
-        path = self.direction.operation.path
-        method = self.direction.operation.method.upper()
-        return f"state.schema['{path}']['{method}'].links['{self.direction.status_code}']['{self.direction.name}']"

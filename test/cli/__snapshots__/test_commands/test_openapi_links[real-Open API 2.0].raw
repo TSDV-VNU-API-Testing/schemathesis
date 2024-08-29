@@ -9,6 +9,8 @@ Random seed: 42
 Workers: 1
 Collected API operations: 3
 Collected API links: 3
+API probing: SUCCESS
+Schema analysis: SKIP
 
 POST /api/users/ .                                                        [ 33%]
     -> GET /api/users/{user_id} .                                         [ 50%]
@@ -20,9 +22,9 @@ PATCH /api/users/{user_id} .                                              [100%]
 =================================== SUMMARY ====================================
 
 Performed checks:
-    not_a_server_error                    12 / 12 passed          PASSED 
+    not_a_server_error                    N / N passed          PASSED 
 
 Tip: Use the `--report` CLI option to visualize test results via Schemathesis.io.
 We run additional conformance checks on reports from public repos.
 
-============================== 6 passed in 1.00s ===============================
+============================== in 1.00s ========================================

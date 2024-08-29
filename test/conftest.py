@@ -1,11 +1,15 @@
 from __future__ import annotations
+
 import io
 import json
+import logging
 import os
+import platform
 import re
 import shlex
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from textwrap import dedent
 from types import SimpleNamespace
@@ -21,19 +25,19 @@ from hypothesis import settings
 from packaging import version
 from syrupy.extensions.single_file import SingleFileSnapshotExtension, WriteMode
 from syrupy.types import PropertyFilter, PropertyMatcher
-from importlib import metadata
 from urllib3 import HTTPResponse
 
 import schemathesis.cli
-from schemathesis.cli.output.default import TEST_CASE_ID_TITLE
-from schemathesis.models import Case
 from schemathesis.cli import reset_checks
+from schemathesis.cli.output.default import TEST_CASE_ID_TITLE
 from schemathesis.constants import HOOKS_MODULE_ENV_VAR
 from schemathesis.experimental import GLOBAL_EXPERIMENTS
 from schemathesis.extra._aiohttp import run_server as run_aiohttp_server
 from schemathesis.extra._flask import run_server as run_flask_server
+from schemathesis.models import Case
 from schemathesis.service import HOSTS_PATH_ENV_VAR
 from schemathesis.specs.openapi import loaders as oas_loaders
+from schemathesis.specs.openapi import media_types
 from schemathesis.transports.responses import WSGIResponse
 
 from .apps import _graphql as graphql
@@ -43,6 +47,7 @@ from .utils import get_schema_path, make_schema
 
 pytest_plugins = ["pytester", "aiohttp.pytest_plugin", "pytest_mock"]
 
+logging.getLogger("pyrate_limiter").setLevel(logging.CRITICAL)
 
 # Register Hypothesis profile. Could be used as
 # `pytest test -m hypothesis --hypothesis-profile <profile-name>`
@@ -64,11 +69,13 @@ def reset_hooks():
     schemathesis.hooks.unregister_all()
     schemathesis.auth.unregister()
     reset_checks()
+    media_types.unregister_all()
     yield
     GLOBAL_EXPERIMENTS.disable_all()
     schemathesis.hooks.unregister_all()
     schemathesis.auth.unregister()
     reset_checks()
+    media_types.unregister_all()
 
 
 @pytest.fixture(scope="session")
@@ -111,6 +118,7 @@ def pytest_generate_tests(metafunc):
 def pytest_configure(config):
     config.addinivalue_line("markers", "operations(*names): Add only specified API operations to the test application.")
     config.addinivalue_line("markers", "service(**kwargs): Setup mock server for Schemathesis.io.")
+    config.addinivalue_line("markers", "analyze_schema(autouse=True, extensions=()): Configure schema analysis.")
     config.addinivalue_line("markers", "snapshot(**kwargs): Configure snapshot tests.")
     config.addinivalue_line("markers", "hypothesis_nested: Mark tests with nested Hypothesis tests.")
     config.addinivalue_line(
@@ -262,7 +270,7 @@ def graphql_schema(graphql_url):
 
 @pytest.fixture
 def graphql_strategy(graphql_schema):
-    return graphql_schema["/graphql"]["POST"].as_strategy()
+    return graphql_schema["Query"]["getBooks"].as_strategy()
 
 
 @contextmanager
@@ -275,6 +283,9 @@ def keep_cwd():
 
 
 FLASK_MARKERS = ("* Serving Flask app", "* Debug mode")
+PACKAGE_ROOT = Path(schemathesis.__file__).parent
+SITE_PACKAGES = requests.__file__.split("requests")[0]
+TRANSITIONS_PATTERN = re.compile(r"(\d+)(?:\s+(\d+)\s+(\d+)\s+(\d+))$")
 
 
 @dataclass()
@@ -292,6 +303,8 @@ class CliSnapshotConfig:
     replace_uuid: bool = True
     replace_response_time: bool = True
     replace_seed: bool = True
+    replace_reproduce_with: bool = False
+    replace_stateful_progress: bool = True
 
     @classmethod
     def from_request(cls, request: FixtureRequest) -> CliSnapshotConfig:
@@ -306,7 +319,12 @@ class CliSnapshotConfig:
 
     def serialize(self, data: str) -> str:
         lines = data.splitlines()
-        lines = [line for line in lines if not any(marker in line for marker in FLASK_MARKERS)]
+        lines = [
+            line
+            for line in lines
+            if not any(marker in line for marker in FLASK_MARKERS)
+            and line not in ("API probing: ...", "Schema analysis: ...")
+        ]
         data = "\n".join(lines)
         if self.replace_service_host:
             try:
@@ -328,6 +346,25 @@ class CliSnapshotConfig:
         if self.replace_tmp_dir:
             with keep_cwd():
                 data = data.replace(str(self.testdir.tmpdir) + os.path.sep, "/tmp/")
+                data = data.replace(str(Path(self.testdir.tmpdir).parent) + os.path.sep, "/tmp/")
+        package_root = "/package-root"
+        site_packages = "/site-packages/"
+        data = data.replace(str(PACKAGE_ROOT), package_root)
+        data = data.replace(str(SITE_PACKAGES), site_packages)
+        data = re.sub(", line [0-9]+,", ", line XXX,", data)
+        data = re.sub(r"Compressed report size: \d+ [KMG]B", "Compressed report size: XX KB", data)
+        if "Traceback (most recent call last):" in data:
+            lines = [line for line in data.splitlines() if set(line) != {" ", "^"}]
+            comprehension_ids = [idx for idx, line in enumerate(lines) if line.strip().endswith("comp>")]
+            # Drop frames that are related to comprehensions
+            for idx in comprehension_ids[::-1]:
+                lines.pop(idx)
+                lines.pop(idx)
+            if platform.system() == "Windows":
+                for idx, line in enumerate(lines):
+                    if line.strip().startswith("File") and "line" in line:
+                        lines[idx] = line.replace("\\", "/")
+            data = "\n".join(lines)
         if self.replace_multi_worker_progress:
             lines = data.splitlines()
             for idx, line in enumerate(lines):
@@ -337,6 +374,8 @@ class CliSnapshotConfig:
                     else:
                         lines[idx] = "".join(sorted(line))
             data = "\n".join(lines) + "\n"
+        if self.replace_stateful_progress:
+            data = re.sub(r"(?<=Stateful tests\n\n)([.FES]+)", "...", data)
         if self.replace_statistic:
             data = re.sub("[0-9]+ / [0-9]+ passed", "N / N passed", data)
             data = re.sub("N / N passed +PASSED", "N / N passed          PASSED", data)
@@ -347,6 +386,7 @@ class CliSnapshotConfig:
                 data.replace("Errno 111", "Error NUM")
                 .replace("Errno 61", "Error NUM")
                 .replace("WinError 10061", "Error NUM")
+                .replace("Cannot connect to proxy.", "Unable to connect to proxy")
             )
             data = data.replace(
                 "No connection could be made because the target machine actively refused it", "Connection refused"
@@ -355,6 +395,8 @@ class CliSnapshotConfig:
             data = re.sub(r"It took [0-9]+\.[0-9]{2}ms", "It took 500.00ms", data)
             lines = data.splitlines()
             lines[-1] = re.sub(r"in [0-9]+\.[0-9]{2}s", "in 1.00s", lines[-1])
+            if "in 1.00s" in lines[-1]:
+                lines[-1] = lines[-1].ljust(80, "=")
             data = "\n".join(lines) + "\n"
         if self.replace_test_case_id:
             lines = data.splitlines()
@@ -378,6 +420,27 @@ class CliSnapshotConfig:
                     break
             lines = [line for line in lines if not (line.startswith("Upload: ") and line.endswith(tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")))]
             data = "\n".join(lines) + "\n"
+        if self.replace_reproduce_with:
+            lines = []
+            replace_next_non_empty = False
+            for line in data.splitlines():
+                if replace_next_non_empty and line:
+                    lines.append("    <PLACEHOLDER>")
+                else:
+                    lines.append(line)
+                if line.startswith("Reproduce with:"):
+                    replace_next_non_empty = True
+                elif line:
+                    replace_next_non_empty = False
+            data = "\n".join(lines) + "\n"
+        lines = data.splitlines()
+        output = []
+        if any(line.startswith("Links ") for line in lines):
+            for line in lines:
+                if TRANSITIONS_PATTERN.search(line):
+                    line = TRANSITIONS_PATTERN.sub("", line).rstrip()
+                output.append(line)
+            data = "\n".join(output) + "\n"
         return data
 
 
@@ -385,7 +448,7 @@ EXAMPLE_UUID = "e32ab85ed4634c38a320eb0b22460da9"
 
 
 @pytest.fixture
-def snapshot_cli(request, snapshot, tmp_path):
+def snapshot_cli(request, snapshot):
     config = CliSnapshotConfig.from_request(request)
 
     class CliSnapshotExtension(SingleFileSnapshotExtension):
@@ -406,14 +469,19 @@ def snapshot_cli(request, snapshot, tmp_path):
                 serialized += f"\n---\nStderr:\n{data.stderr}"
             return config.serialize(serialized).replace("\r\n", "\n").replace("\r", "\n")
 
-    return snapshot.use_extension(extension_class=CliSnapshotExtension)
+    class SnapshotAssertion(snapshot.__class__):
+        def rebuild(self):
+            return self.use_extension(extension_class=CliSnapshotExtension)
+
+    snapshot.__class__ = SnapshotAssertion
+    return snapshot.rebuild()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture()
 def cli():
     """CLI runner helper.
 
-    Provides in-process execution via `click.CliRunner` and sub-process execution via `pytest.pytester.Testdir`.
+    Provides in-process execution via `click.CliRunner`.
     """
     cli_runner = CliRunner()
 
@@ -893,7 +961,7 @@ def testdir(testdir):
     def maker(
         content,
         method=None,
-        endpoint=None,
+        path=None,
         tag=None,
         pytest_plugins=("aiohttp.pytest_plugin",),
         validate_schema=True,
@@ -923,7 +991,7 @@ def testdir(testdir):
         schema = schemathesis.from_dict(
             raw_schema,
             method={method},
-            endpoint={endpoint},
+            endpoint={path},
             tag={tag},
             validate_schema={validate_schema},
             sanitize_output={sanitize_output}
@@ -931,7 +999,7 @@ def testdir(testdir):
         """.format(
                 schema=schema,
                 method=repr(method),
-                endpoint=repr(endpoint),
+                path=repr(path),
                 tag=repr(tag),
                 validate_schema=repr(validate_schema),
                 sanitize_output=repr(sanitize_output),
@@ -1102,6 +1170,7 @@ def response_factory():
         headers = headers or {}
         if content_type:
             headers.setdefault("Content-Type", content_type)
+        headers.setdefault("Content-Length", str(len(content)))
         response.headers.update(headers)
         response.raw = HTTPResponse(body=io.BytesIO(content), status=status_code, headers=response.headers)
         response.request = requests.PreparedRequest()
@@ -1127,7 +1196,7 @@ def response_factory():
 def case_factory(swagger_20):
     def factory(**kwargs):
         kwargs.setdefault("operation", swagger_20["/users"]["get"])
-        return Case(**kwargs)
+        return Case(generation_time=0.0, **kwargs)
 
     return factory
 

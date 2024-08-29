@@ -1,13 +1,16 @@
 from __future__ import annotations
+
 import ctypes
 import queue
 import threading
 import time
+import warnings
 from dataclasses import dataclass
 from queue import Queue
 from typing import Any, Callable, Generator, Iterable, cast
 
 import hypothesis
+from hypothesis.errors import HypothesisWarning
 
 from ..._hypothesis import create_test
 from ...generation import DataGenerationMethod, GenerationConfig
@@ -16,7 +19,7 @@ from ...models import CheckFunction, TestResultSet
 from ...stateful import Feedback, Stateful
 from ...targets import Target
 from ...transports.auth import get_requests_auth
-from ...types import RawAuth, RequestCert
+from ...types import RawAuth
 from ...utils import capture_hypothesis_output
 from .. import events
 from .core import BaseRunner, asgi_test, get_session, handle_schema_error, network_test, run_test, wsgi_test
@@ -39,6 +42,7 @@ def _run_task(
     headers: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> None:
+    warnings.filterwarnings("ignore", message="The recursion limit will not be reset", category=HypothesisWarning)
     as_strategy_kwargs = {}
     if headers is not None:
         as_strategy_kwargs["headers"] = {key: value for key, value in headers.items() if key.lower() != "user-agent"}
@@ -223,9 +227,6 @@ class ThreadPoolRunner(BaseRunner):
     """Spread different tests among multiple worker threads."""
 
     workers_num: int = 2
-    request_tls_verify: bool | str = True
-    request_proxy: str | None = None
-    request_cert: RequestCert | None = None
 
     def _execute(
         self, results: TestResultSet, stop_event: threading.Event
@@ -329,10 +330,7 @@ class ThreadPoolRunner(BaseRunner):
             "stateful_recursion_limit": self.stateful_recursion_limit,
             "data_generation_methods": self.schema.data_generation_methods,
             "kwargs": {
-                "request_timeout": self.request_timeout,
-                "request_tls_verify": self.request_tls_verify,
-                "request_proxy": self.request_proxy,
-                "request_cert": self.request_cert,
+                "request_config": self.request_config,
                 "store_interactions": self.store_interactions,
                 "max_response_time": self.max_response_time,
                 "dry_run": self.dry_run,
